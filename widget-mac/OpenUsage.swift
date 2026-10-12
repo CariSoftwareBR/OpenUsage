@@ -58,6 +58,18 @@ struct KeysResult: Codable {
 
 let keyedProviders = ["openrouter", "zai"]
 
+struct ProviderName {
+  let id: String
+  let name: String
+}
+
+/** Every provider the widget offers, in the order the settings list them. */
+let providerNames = [
+  ("claude", "Claude"), ("codex", "Codex"), ("copilot", "Copilot"), ("cursor", "Cursor"), ("devin", "Devin"),
+  ("grok", "Grok"), ("kilo", "Kilo"), ("ollama", "Ollama"), ("opencode-go", "OpenCode Go"),
+  ("openrouter", "OpenRouter"), ("zai", "Z.ai"),
+].map { ProviderName(id: $0.0, name: $0.1) }
+
 /** "No key yet", "Saved here", "Found in OpenCode", "From OPENROUTER_API_KEY". */
 func keyStatus(_ k: KeyInfo?) -> String {
   guard let k else { return "Looking for a key..." }
@@ -114,12 +126,26 @@ final class Model: ObservableObject {
   @Published var gauge = defaults.string(forKey: "gauge") == "bar" ? "bar" : "ring"
   @Published var update = UpdateState()
   @Published var keys: [String: KeyInfo] = [:]
+  /**
+   * Providers switched off: not fetched and not shown. At the first start only the ones set up on this Mac are on;
+   * "seen" remembers which were found, so one installed later turns on by itself and one switched off stays off.
+   */
+  @Published var hiddenProviders = defaults.stringArray(forKey: "hiddenProviders") ?? []
+  private var seenProviders = defaults.stringArray(forKey: "seenProviders")
+  /** Providers this widget offered at the last detection: one added by an update starts off unless it is found here. */
+  private var knownProviders: [String]
+  private var detectProc: Process?
+  /** Asked for while a refresh was running (a provider switched back on, say): fetch again when it ends. */
+  private var refreshPending = false
 
   private var proc: Process?
   private var updateProc: Process?
   private var keysProc: Process?
 
   init() {
+    knownProviders =
+      defaults.stringArray(forKey: "knownProviders")
+      ?? ((defaults.stringArray(forKey: "seenProviders") ?? []) + (defaults.stringArray(forKey: "hiddenProviders") ?? []))
     // The last good result is cached on disk, so a restart (or a rate-limited first fetch) still shows numbers.
     if let raw = try? Data(contentsOf: cacheURL), let cache = try? JSONDecoder().decode(Cache.self, from: raw) {
       data = cache.data
@@ -182,17 +208,72 @@ final class Model: ObservableObject {
   }
 
   func refresh() {
-    guard proc == nil else { return }
+    // While the providers are being detected the switches aren't settled yet; detection refreshes when done.
+    guard detectProc == nil else { return }
+    guard proc == nil else {
+      refreshPending = true
+      return
+    }
     guard resource("root") != nil else {
       lastError = "run build.sh again"
       return
     }
-    proc = runScript("usage-json.ts", [], timeout: 60) { raw, timedOut in self.complete(raw, timedOut: timedOut) }
+    let ids = providerNames.map(\.id).filter { !hiddenProviders.contains($0) }
+    // Nothing switched on: no ids would mean "whatever is set up" to the script, so don't ask at all.
+    if ids.isEmpty {
+      data = []
+      return
+    }
+    proc = runScript("usage-json.ts", ids, timeout: 60) { raw, timedOut in
+      self.complete(raw, timedOut: timedOut)
+      if self.refreshPending {
+        self.refreshPending = false
+        self.refresh()
+      }
+    }
     if proc == nil {
       lastError = "node not found"
       return
     }
     refreshing = true
+  }
+
+  /** Asks which providers are set up on this Mac (local files only, no network), then refreshes. */
+  func detect() {
+    guard detectProc == nil else { return }
+    detectProc = runScript("usage-json.ts", ["--detect"], timeout: 30) { raw, _ in
+      self.detectProc = nil
+      self.refreshing = false
+      // A run that failed (or printed nothing) found nothing out: leave the switches as they are.
+      if let found = try? JSONDecoder().decode([String].self, from: raw) {
+        let all = providerNames.map(\.id)
+        if let seen = self.seenProviders {
+          let new = found.filter { !seen.contains($0) }
+          let unknown = all.filter { !self.knownProviders.contains($0) && !found.contains($0) }
+          var hidden = self.hiddenProviders.filter { !new.contains($0) }
+          for id in unknown where !hidden.contains(id) { hidden.append(id) }
+          self.hiddenProviders = hidden
+          self.seenProviders = seen + new
+        } else {
+          self.hiddenProviders = all.filter { !found.contains($0) }
+          self.seenProviders = found
+        }
+        self.knownProviders = all
+        defaults.set(self.hiddenProviders, forKey: "hiddenProviders")
+        defaults.set(self.seenProviders, forKey: "seenProviders")
+        defaults.set(self.knownProviders, forKey: "knownProviders")
+      }
+      self.refresh()
+    }
+    if detectProc == nil { refresh() } else { refreshing = true }
+  }
+
+  /** Switches a provider on or off; one switched back on has nothing cached, so it is fetched. */
+  func setProvider(_ id: String, on: Bool) {
+    hiddenProviders.removeAll { $0 == id }
+    if !on { hiddenProviders.append(id) }
+    defaults.set(hiddenProviders, forKey: "hiddenProviders")
+    if on { refresh() }
   }
 
   /**
@@ -282,12 +363,15 @@ final class Model: ObservableObject {
    * the normal layout keeps it, with the hint on how to sign in.
    */
   var shown: [ProviderUsage] {
-    if layout == "normal" { return data }
-    return data.filter { $0.account != nil || !$0.windows.isEmpty || !$0.extras.isEmpty || $0.error == nil }
+    let on = data.filter { !hiddenProviders.contains($0.id) }
+    if layout == "normal" { return on }
+    return on.filter { $0.account != nil || !$0.windows.isEmpty || !$0.extras.isEmpty || $0.error == nil }
   }
 
+  var providerCount: Int { providerNames.filter { !hiddenProviders.contains($0.id) }.count }
+
   var trayText: String {
-    let parts = data.compactMap { u -> String? in
+    let parts = data.filter { !hiddenProviders.contains($0.id) }.compactMap { u -> String? in
       guard let m = u.windows.map(\.usedPct).max() else { return nil }
       return "\(u.name) \(Int(m.rounded()))%"
     }
@@ -1319,11 +1403,28 @@ struct SettingsView: View {
       .padding(.top, 8)
       .modifier(Intro(index: 4, step: 0.03))
       Rectangle().fill(C.divider).frame(height: 1).padding(.top, 16).padding(.bottom, 14)
-      caption("API KEYS").modifier(Intro(index: 5, step: 0.03))
+      caption("PROVIDERS").modifier(Intro(index: 5, step: 0.03))
+      LazyVGrid(columns: [GridItem(.flexible(), spacing: 20), GridItem(.flexible())], alignment: .leading, spacing: 8) {
+        ForEach(providerNames, id: \.id) { p in
+          let on = !m.hiddenProviders.contains(p.id)
+          HStack {
+            LogoTitle(id: p.id, text: p.name, size: 13, weight: .regular)
+            Spacer(minLength: 4)
+            Toggle("", isOn: Binding(get: { on }, set: { v in withAnimation(.easeOut(duration: 0.2)) { m.setProvider(p.id, on: v) } }))
+              .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+              // The last one left on can't be switched off, so the widget is never empty.
+              .disabled(on && m.providerCount <= 1)
+              .help("Show \(p.name)")
+          }
+        }
+      }
+      .modifier(Intro(index: 6, step: 0.03))
+      Rectangle().fill(C.divider).frame(height: 1).padding(.top, 14).padding(.bottom, 14)
+      caption("API KEYS").modifier(Intro(index: 7, step: 0.03))
       Text("Found by itself when OpenCode, Kilo, Crush or Claude Code already use one; otherwise add it here.")
         .font(.system(size: 11.5)).foregroundColor(C.muted).fixedSize(horizontal: false, vertical: true)
         .padding(.bottom, 10)
-        .modifier(Intro(index: 6, step: 0.03))
+        .modifier(Intro(index: 8, step: 0.03))
       ForEach(Array(keyedProviders.enumerated()), id: \.element) { i, pid in
         let k = m.keys[pid]
         HStack(spacing: 6) {
@@ -1338,10 +1439,10 @@ struct SettingsView: View {
           DialogButton(title: k?.source != nil ? "Change" : "Add key", enabled: k != nil) { askKey(pid) }
         }
         .padding(.bottom, 10)
-        .modifier(Intro(index: 7 + i, step: 0.03))
+        .modifier(Intro(index: 9 + i, step: 0.03))
       }
       Rectangle().fill(C.divider).frame(height: 1).padding(.top, 4).padding(.bottom, 14)
-      caption("ABOUT").modifier(Intro(index: 10, step: 0.03))
+      caption("ABOUT").modifier(Intro(index: 12, step: 0.03))
       HStack(spacing: 12) {
         Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 40, height: 40)
         VStack(alignment: .leading, spacing: 1) {
@@ -1441,7 +1542,8 @@ struct WidgetView: View {
       .background(DragArea())
       Rectangle().fill(C.divider).frame(height: 1).padding(.bottom, 8)
       if m.shown.isEmpty {
-        Text(m.refreshing ? "Loading..." : "No data").foregroundColor(C.muted)
+        Text(m.refreshing ? "Loading..." : m.providerCount == 0 ? "No AI tool found on this Mac. Turn one on in settings (\u{2699})." : "No data")
+          .foregroundColor(C.muted).fixedSize(horizontal: false, vertical: true)
       }
       VStack(spacing: 8) {
         if m.layout == "compact" {
@@ -1646,7 +1748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     panel.alphaValue = 0
     showWindow()
-    model.refresh()
+    model.detect()
     model.runUpdate("check")
   }
 

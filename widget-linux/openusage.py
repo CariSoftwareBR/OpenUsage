@@ -67,7 +67,11 @@ ICONS = {
 
 # Services with no CLI sign-in: their API key is found on the machine or added in Settings (scripts/keys.ts).
 KEYED_PROVIDERS = ["openrouter", "zai"]
-PROVIDER_NAMES = {"openrouter": "OpenRouter", "zai": "Z.ai"}
+# Every provider the widget offers, in the order the settings list them.
+PROVIDER_NAMES = {
+    "claude": "Claude", "codex": "Codex", "copilot": "Copilot", "cursor": "Cursor", "devin": "Devin", "grok": "Grok",
+    "kilo": "Kilo", "ollama": "Ollama", "opencode-go": "OpenCode Go", "openrouter": "OpenRouter", "zai": "Z.ai",
+}
 
 
 def key_status(k):
@@ -276,6 +280,12 @@ button.dbtn { all: unset; padding: 6px 14px; border-radius: 7px; background-colo
 button.dbtn:hover { opacity: 0.85; }
 button.dbtn.primary { background-color: @text; border-color: @text; color: @bg; font-weight: 600; }
 button.dbtn:disabled { opacity: 0.4; }
+switch { background-color: @track; background-image: none; border: none; border-radius: 10px; min-height: 18px;
+    min-width: 34px; box-shadow: none; transition: background-color 160ms ease-out; color: transparent; font-size: 0; }
+switch:checked { background-color: @text; }
+switch:disabled { opacity: 0.4; }
+switch slider { background-color: @bg; background-image: none; border: none; border-radius: 7px; min-height: 14px;
+    min-width: 14px; margin: 2px; box-shadow: none; }
 .status { background-color: @card; border: 1px solid @cardBorder; border-radius: 8px; }
 """
 
@@ -549,6 +559,18 @@ class Model:
         # API keys of OpenRouter / Z.ai, from scripts/keys.ts: {id: {name, url, source, saved}}.
         self.keys = {}
         self.keys_proc = None
+        # Providers switched off: not fetched and not shown. At the first start only the ones set up on this machine
+        # are on; "seen" remembers which were found, so one installed later turns on by itself and one switched off
+        # stays off.
+        self.hidden = [p for p in settings.get("hiddenProviders") or [] if isinstance(p, str)]
+        seen = settings.get("seenProviders")
+        self.seen = [p for p in seen if isinstance(p, str)] if isinstance(seen, list) else None
+        # Providers this widget offered at the last detection: one added by an update starts off unless found here.
+        known = settings.get("knownProviders")
+        self.known = known if isinstance(known, list) else (self.seen or []) + self.hidden
+        self.detect_proc = None
+        # Asked for while a refresh was running (a provider switched back on, say): fetch again when it ends.
+        self.refresh_pending = False
         # The last good result is cached on disk, so a restart (or a rate-limited first fetch) still shows numbers.
         cache = read_json(CACHE_FILE, {})
         if isinstance(cache, dict) and isinstance(cache.get("data"), list):
@@ -638,18 +660,80 @@ class Model:
         return True
 
     def refresh(self):
-        if self.proc is not None:
+        # While the providers are being detected the switches aren't settled yet; detection refreshes when done.
+        if self.detect_proc is not None:
             return
-        self.proc = self.run_script("usage-json.ts", [], 60, self._complete)
+        if self.proc is not None:
+            self.refresh_pending = True
+            return
+        ids = [p for p in PROVIDER_NAMES if p not in self.hidden]
+        # Nothing switched on: no ids would mean "whatever is set up" to the script, so don't ask at all.
+        if not ids:
+            self.data = []
+            self.changed()
+            return
+        self.proc = self.run_script("usage-json.ts", ids, 60, self._complete)
         if self.proc is None:
             self.last_error = "node not found"
         else:
             self.refreshing = True
         self.changed()
 
+    def detect(self):
+        """Asks which providers are set up on this machine (local files only, no network), then refreshes."""
+        if self.detect_proc is not None:
+            return
+
+        def done(raw, _timed_out):
+            self.detect_proc = None
+            self.refreshing = False
+            try:
+                found = json.loads(raw)
+                assert isinstance(found, list)
+            except (ValueError, AssertionError):
+                # A run that failed (or printed nothing) found nothing out: leave the switches as they are.
+                found = None
+            if found is not None:
+                every = list(PROVIDER_NAMES)
+                if self.seen is None:
+                    self.hidden = [p for p in every if p not in found]
+                    self.seen = list(found)
+                else:
+                    new = [p for p in found if p not in self.seen]
+                    unknown = [p for p in every if p not in self.known and p not in found]
+                    self.hidden = [p for p in self.hidden if p not in new]
+                    self.hidden += [p for p in unknown if p not in self.hidden]
+                    self.seen += new
+                self.known = every
+                save_setting("hiddenProviders", self.hidden)
+                save_setting("seenProviders", self.seen)
+                save_setting("knownProviders", self.known)
+            self.refresh()
+
+        self.detect_proc = self.run_script("usage-json.ts", ["--detect"], 30, done)
+        if self.detect_proc is None:
+            self.refresh()
+        else:
+            self.refreshing = True
+            self.changed()
+
+    def set_provider(self, pid, on):
+        """Switches a provider on or off; one switched back on has nothing cached, so it is fetched."""
+        self.hidden = [p for p in self.hidden if p != pid] + ([] if on else [pid])
+        save_setting("hiddenProviders", self.hidden)
+        self.changed()
+        if on:
+            self.refresh()
+
+    def providers_on(self):
+        return [p for p in PROVIDER_NAMES if p not in self.hidden]
+
     def _complete(self, raw, timed_out):
         self.proc = None
         self.refreshing = False
+        if self.refresh_pending:
+            self.refresh_pending = False
+            GLib.idle_add(lambda: self.refresh() and False)
         try:
             fresh = json.loads(raw)
             assert isinstance(fresh, list)
@@ -711,17 +795,19 @@ class Model:
         In compact mode a provider with no account at all (never signed in, no key, nothing to show) gets no card;
         the normal layout keeps it, with the hint on how to sign in.
         """
+        on = [u for u in self.data if u.get("id") not in self.hidden]
         if self.layout == "normal":
-            return self.data
+            return on
         return [
             u
-            for u in self.data
+            for u in on
             if u.get("account") or u.get("windows") or u.get("extras") or not u.get("error")
         ]
 
     def tray_text(self):
         parts = [
-            f"{u['name']} {round(max(w['usedPct'] for w in u['windows']))}%" for u in self.data if u.get("windows")
+            f"{u['name']} {round(max(w['usedPct'] for w in u['windows']))}%" for u in self.data
+            if u.get("windows") and u.get("id") not in self.hidden
         ]
         return "OpenUsage - " + " | ".join(parts) if parts else "OpenUsage"
 
@@ -1526,7 +1612,7 @@ class App(Gtk.Application):
         GLib.timeout_add_seconds(24 * 3600, lambda: self.model.run_update("check") or True)
         # Re-renders the "updated N min ago" label.
         GLib.timeout_add_seconds(30, self.tick)
-        self.model.refresh()
+        self.model.detect()
         self.model.run_update("check")
 
     # ---- theme and layout
@@ -1649,7 +1735,12 @@ class App(Gtk.Application):
 
         shown = m.shown()
         if not shown:
-            root.pack_start(label(span("Loading..." if m.refreshing else "No data", 13, C["muted"])), False, False, 0)
+            msg = (
+                "Loading..." if m.refreshing
+                else "No AI tool found on this machine. Turn one on in settings (⚙)." if not m.providers_on()
+                else "No data"
+            )
+            root.pack_start(label(span(msg, 13, C["muted"]), wrap=True), False, False, 0)
         cards = vbox(8)
         blocks = (
             [compact_card(pid, accounts, m.display, m.gauge, i, m.intro) for i, (pid, accounts) in enumerate(groups(shown))]
@@ -1750,6 +1841,22 @@ class App(Gtk.Application):
             False, False, 0,
         )
         root.pack_start(margins(divider(), top=16, bottom=14), False, False, 0)
+        root.pack_start(caption("PROVIDERS"), False, False, 0)
+        grid = Gtk.Grid(column_spacing=20, row_spacing=8, column_homogeneous=True)
+        on_count = len(m.providers_on())
+        for i, (pid, name) in enumerate(PROVIDER_NAMES.items()):
+            on = pid not in m.hidden
+            row = hbox(6)
+            row.pack_start(logo_title(pid, name, 13, weight=None), True, True, 0)
+            sw = Gtk.Switch(active=on, valign=Gtk.Align.CENTER, tooltip_text=f"Show {name}")
+            # The last one left on can't be switched off, so the widget is never empty.
+            sw.set_sensitive(not on or on_count > 1)
+            # Switching rebuilds this dialog, so wait until the switch is done with its own signal.
+            sw.connect("notify::active", lambda w, _p, pid=pid: GLib.idle_add(lambda on=w.get_active(): m.set_provider(pid, on) and False))
+            row.pack_end(sw, False, False, 0)
+            grid.attach(row, i % 2, i // 2, 1, 1)
+        root.pack_start(grid, False, False, 0)
+        root.pack_start(margins(divider(), top=14, bottom=14), False, False, 0)
         root.pack_start(caption("API KEYS"), False, False, 0)
         root.pack_start(
             margins(label(span("Found by itself when OpenCode, Kilo, Crush or Claude Code already use one; otherwise add it here.", 11.5, C["muted"]), wrap=True), bottom=10),
