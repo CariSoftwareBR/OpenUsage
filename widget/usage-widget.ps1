@@ -12,8 +12,15 @@ $Root = Split-Path -Parent $PSScriptRoot
 $RefreshMinutes = 5
 $StateDir = Join-Path $env:APPDATA 'usage-widget'
 $StatePath = Join-Path $StateDir 'widget.json'
-$ProviderNames = [ordered]@{ claude = 'Claude'; codex = 'Codex'; copilot = 'Copilot'; cursor = 'Cursor'; kilo = 'Kilo'; 'opencode-go' = 'OpenCode Go' }
-$Icons = @{ claude = [string][char]0x273B; codex = [string][char]0x25CE; copilot = [string][char]0x25C8; cursor = [string][char]0x2B21; kilo = [string][char]0x25C6; 'opencode-go' = [string][char]0x25A3 }
+$ProviderNames = [ordered]@{
+  claude = 'Claude'; codex = 'Codex'; copilot = 'Copilot'; cursor = 'Cursor'; devin = 'Devin'; grok = 'Grok'; kilo = 'Kilo'
+  ollama = 'Ollama'; 'opencode-go' = 'OpenCode Go'; openrouter = 'OpenRouter'; zai = 'Z.ai'
+}
+$Icons = @{
+  claude = [string][char]0x273B; codex = [string][char]0x25CE; copilot = [string][char]0x25C8; cursor = [string][char]0x2B21
+  devin = [string][char]0x25C7; grok = [string][char]0x2726; kilo = [string][char]0x25C6; ollama = [string][char]0x25C9
+  'opencode-go' = [string][char]0x25A3; openrouter = [string][char]0x21C4; zai = [string][char]0x25B2
+}
 
 # ---- single instance ----------------------------------------------------------
 $mutex = New-Object System.Threading.Mutex($false, 'Local\usage-widget')
@@ -39,6 +46,8 @@ $script:layout = if ($state.layout -eq 'compact') { 'compact' } else { 'normal' 
 # "seen" remembers which were found, so one installed later turns on by itself and one switched off stays off.
 $script:hiddenProviders = @($state.hiddenProviders | Where-Object { $_ })
 $script:seenProviders = if ($null -ne $state.seenProviders) { @($state.seenProviders | Where-Object { $_ }) } else { $null }
+# Providers this widget offered at the last detection: one added by an update starts off unless it is found here.
+$script:knownProviders = if ($null -ne $state.knownProviders) { @($state.knownProviders | Where-Object { $_ }) } else { @($script:seenProviders) + @($script:hiddenProviders) }
 
 # ---- theme (follows Windows light/dark) ---------------------------------------
 $light = $false
@@ -48,7 +57,11 @@ $C = if ($light) {
 } else {
   @{ Bg = '#1C1A19'; Border = '#34302D'; Divider = '#2C2926'; Text = '#EBE7E2'; Muted = '#8D8680'; Warn = '#E8953F'; Error = '#E5584F'; Ok = '#5BBF86'; Track = '#35302C'; Hover = '#2A2725'; Card = '#242120'; CardBorder = '#2E2A27' }
 }
-$Accents = @{ claude = '#D97757'; codex = $(if ($light) { '#0F8A6C' } else { '#3DBE9C' }); copilot = $(if ($light) { '#8250DF' } else { '#A371F7' }); cursor = $C.Text; kilo = $(if ($light) { '#A68A00' } else { '#F2D33C' }); 'opencode-go' = $C.Text }
+$Accents = @{
+  claude = '#D97757'; codex = $(if ($light) { '#0F8A6C' } else { '#3DBE9C' }); copilot = $(if ($light) { '#8250DF' } else { '#A371F7' }); cursor = $C.Text
+  devin = $(if ($light) { '#2563EB' } else { '#60A5FA' }); grok = $C.Text; kilo = $(if ($light) { '#A68A00' } else { '#F2D33C' }); ollama = $C.Text
+  'opencode-go' = $C.Text; openrouter = $(if ($light) { '#4F46E5' } else { '#818CF8' }); zai = $(if ($light) { '#0E7490' } else { '#22D3EE' })
+}
 function Brush([string]$hex) { [System.Windows.Media.BrushConverter]::new().ConvertFromString($hex) }
 
 # ---- window -------------------------------------------------------------------
@@ -615,10 +628,12 @@ function Complete-Detect {
       $script:seenProviders = $found
     } else {
       $new = @($found | Where-Object { $script:seenProviders -notcontains $_ })
-      $script:hiddenProviders = @($script:hiddenProviders | Where-Object { $new -notcontains $_ })
+      $unknown = @($all | Where-Object { $script:knownProviders -notcontains $_ -and $found -notcontains $_ })
+      $script:hiddenProviders = @(@($script:hiddenProviders | Where-Object { $new -notcontains $_ }) + $unknown | Select-Object -Unique)
       $script:seenProviders = @($script:seenProviders) + $new
     }
-    Set-State @{ hiddenProviders = $script:hiddenProviders; seenProviders = $script:seenProviders }
+    $script:knownProviders = $all
+    Set-State @{ hiddenProviders = $script:hiddenProviders; seenProviders = $script:seenProviders; knownProviders = $script:knownProviders }
   } catch {}
   if ($script:proc) { $script:refreshPending = $true } else { Start-Refresh }
 }
@@ -982,16 +997,141 @@ function Restart-Widget {
   $win.Close()
 }
 
+# ---- API keys -----------------------------------------------------------------
+# OpenRouter and Z.ai have no CLI login: scripts\keys.ts finds the key the other tools on this PC already use, or
+# keeps one pasted in Settings once the service has accepted it. The key reaches node in an environment variable,
+# never on a command line. Same script as on macOS and Linux.
+$KeyedProviders = @('openrouter', 'zai')
+$script:keys = @{}
+$script:keysProc = $null
+
+# Runs scripts\keys.ts; $onDone gets the error text ('' when none) once it is back. $false only when one is still running.
+function Start-Keys([string[]]$arguments, [string]$key, [scriptblock]$onDone) {
+  if ($script:keysProc) { return $false }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = 'node'
+  $psi.Arguments = '--experimental-strip-types --no-warnings "' + (Join-Path $Root 'scripts\keys.ts') + '" ' + ($arguments -join ' ')
+  $psi.WorkingDirectory = $Root
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  if ($key) { $psi.EnvironmentVariables['OPENUSAGE_KEY'] = $key }
+  try {
+    $script:keysProc = [System.Diagnostics.Process]::Start($psi)
+    $script:keysOut = $script:keysProc.StandardOutput.ReadToEndAsync()
+    $script:keysDone = $onDone
+    return $true
+  } catch {
+    if ($onDone) { & $onDone 'node not found' }
+    return $true
+  }
+}
+
+function Complete-Keys {
+  $p = $script:keysProc
+  if (-not $p -or -not $p.HasExited) { return }
+  $script:keysProc = $null
+  $err = ''
+  try {
+    $r = $script:keysOut.Result | ConvertFrom-Json
+    foreach ($k in @($r.keys)) { $script:keys[[string]$k.id] = $k }
+    $err = [string]$r.error
+  } catch {
+    $err = "couldn't read the keys"
+  }
+  # The callback belongs to a dialog; one closed meanwhile has cleared it. Never let it take the widget down.
+  $done = $script:keysDone
+  $script:keysDone = $null
+  if ($done) { try { & $done $err } catch {} }
+}
+
+# "No key yet", "Saved here", "Found in OpenCode", "From OPENROUTER_API_KEY".
+function Get-KeyStatus([string]$id) {
+  $k = $script:keys[$id]
+  if (-not $k) { return 'Looking for a key...' }
+  if (-not $k.source) { return 'No key yet' }
+  if ($k.saved) { return 'Saved here' }
+  if ($k.source -match '^[A-Z0-9_]+$' -or $k.source -match '[\\/]') { return "From $($k.source)" }
+  return "Found in $($k.source)"
+}
+
+# Asks for the key, checks it with the service and keeps it; $true once saved.
+# Its handlers run while the settings dialog is open, which names its own $d / $dlg: hence $kd / $kdlg here.
+function Show-KeyDialog([string]$id) {
+  $name = $ProviderNames[$id]
+  $url = if ($script:keys[$id]) { [string]$script:keys[$id].url } else { '' }
+  $site = $url -replace '^https?://', '' -replace '/$', ''
+  $body = @"
+      <TextBlock Foreground="$($C.Muted)" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8">
+        $name has no app sign-in to read, so it needs an API key.$(if ($site) { " Create one at <Hyperlink x:Name=`"KeyLink`" Foreground=`"$($C.Text)`">$site</Hyperlink>." })
+      </TextBlock>
+      <Border x:Name="Field" Background="$($C.Card)" BorderBrush="$($C.CardBorder)" BorderThickness="1" CornerRadius="7" Padding="8,6">
+        <PasswordBox x:Name="KeyBox" Background="Transparent" BorderThickness="0" Foreground="$($C.Text)" CaretBrush="$($C.Text)"
+                     SelectionBrush="$($C.Muted)" FontFamily="Cascadia Mono, Consolas" FontSize="13.5" VerticalContentAlignment="Center"/>
+      </Border>
+      <TextBlock x:Name="Info" FontSize="11.5" TextWrapping="Wrap" Margin="2,7,0,0" Foreground="$($C.Muted)">Kept on this PC only, and sent to $name alone.</TextBlock>
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <Button x:Name="CancelBtn" Style="{StaticResource Btn}" IsCancel="True" Margin="0,0,8,0">Cancel</Button>
+        <Button x:Name="OkBtn" Style="{StaticResource Primary}" IsDefault="True" IsEnabled="False">Save</Button>
+      </StackPanel>
+"@
+  $heading = "<Run Foreground=`"$($Accents[$id])`">$($Icons[$id])</Run>  $name API key"
+  $kd = New-Dialog (New-DialogXaml "$name API key" $heading $body) @('Field', 'KeyBox', 'Info', 'CancelBtn', 'OkBtn', 'KeyLink')
+  $kdlg = $kd.Window
+  if ($kd.KeyLink) { $kd.KeyLink.add_Click({ Start-Process $url }) }
+  $kd.KeyBox.add_PasswordChanged({ $kd.OkBtn.IsEnabled = [bool]$kd.KeyBox.Password.Trim() -and -not $script:keysProc })
+  $kd.OkBtn.add_Click({
+    $kd.OkBtn.IsEnabled = $false
+    $kd.KeyBox.IsEnabled = $false
+    $kd.Info.Text = "Checking the key with $name..."
+    $kd.Info.Foreground = Brush $C.Muted
+    $done = {
+      param($err)
+      if (-not $err) { $kdlg.DialogResult = $true; return }
+      $kd.Info.Text = $err
+      $kd.Info.Foreground = Brush $C.Error
+      $kd.Field.BorderBrush = Brush $C.Error
+      $kd.KeyBox.IsEnabled = $true
+      $kd.OkBtn.IsEnabled = $true
+      $kd.KeyBox.Focus() | Out-Null
+    }
+    if (-not (Start-Keys @('set', $id) $kd.KeyBox.Password.Trim() $done)) { & $done 'Busy, try again in a moment.' }
+  })
+  $kdlg.add_ContentRendered({ $kd.KeyBox.Focus() | Out-Null })
+  $saved = [bool]$kdlg.ShowDialog()
+  # Closed while the key was being checked: the answer has no dialog left to go to.
+  $script:keysDone = $null
+  return $saved
+}
+
 # ---- settings -----------------------------------------------------------------
 function Get-SwitchName([string]$id) { 'Prov_' + ($id -replace '\W', '_') }
 
 function Show-Settings {
   $iconUri = (Join-Path $Root 'docs\icon.png') -replace '&', '&amp;'
+  # Two columns, so the list stays short with every provider in it.
+  $col = 0
   $providerRows = foreach ($id in $ProviderNames.Keys) {
+    $margin = if ($col++ % 2) { '10,0,0,8' } else { '0,0,10,8' }
     @"
-      <DockPanel Margin="0,0,0,8">
+      <DockPanel Margin="$margin">
         <CheckBox x:Name="$(Get-SwitchName $id)" DockPanel.Dock="Right" Style="{StaticResource Switch}" Tag="$id" AutomationProperties.Name="Show $($ProviderNames[$id])" VerticalAlignment="Center"/>
         <TextBlock VerticalAlignment="Center"><Run Foreground="$($Accents[$id])">$($Icons[$id])</Run>  $($ProviderNames[$id])</TextBlock>
+      </DockPanel>
+"@
+  }
+  $keyRows = foreach ($id in $KeyedProviders) {
+    @"
+      <DockPanel Margin="0,0,0,10">
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="KeyDel_$id" Style="{StaticResource Btn}" Margin="0,0,6,0" Visibility="Collapsed">Remove</Button>
+          <Button x:Name="KeyBtn_$id" Style="{StaticResource Btn}" MinWidth="86">Add key</Button>
+        </StackPanel>
+        <StackPanel VerticalAlignment="Center">
+          <TextBlock><Run Foreground="$($Accents[$id])">$($Icons[$id])</Run>  $($ProviderNames[$id])</TextBlock>
+          <TextBlock x:Name="KeyInfo_$id" Foreground="$($C.Muted)" FontSize="11"/>
+        </StackPanel>
       </DockPanel>
 "@
   }
@@ -1023,8 +1163,14 @@ function Show-Settings {
       </DockPanel>
       <Border Height="1" Background="$($C.Divider)" Margin="0,16,0,14"/>
       <TextBlock Style="{StaticResource Caption}" Text="PROVIDERS"/>
+      <UniformGrid Columns="2">
 $($providerRows -join "`n")
+      </UniformGrid>
       <Border Height="1" Background="$($C.Divider)" Margin="0,8,0,14"/>
+      <TextBlock Style="{StaticResource Caption}" Text="API KEYS"/>
+      <TextBlock Foreground="$($C.Muted)" FontSize="11.5" TextWrapping="Wrap" Margin="0,0,0,10">Found by itself when OpenCode, Kilo, Crush or Claude Code already use one; otherwise add it here.</TextBlock>
+$($keyRows -join "`n")
+      <Border Height="1" Background="$($C.Divider)" Margin="0,4,0,14"/>
       <TextBlock Style="{StaticResource Caption}" Text="ABOUT"/>
       <DockPanel>
         <Image DockPanel.Dock="Left" Source="$iconUri" Width="40" Height="40" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality"/>
@@ -1065,6 +1211,57 @@ $($providerRows -join "`n")
   }
   foreach ($sw in $switches) { $sw.add_Checked($setProvider); $sw.add_Unchecked($setProvider) }
 
+  # API keys: what was found, and buttons to add, change or remove the one pasted here.
+  $syncKeys = {
+    foreach ($id in $KeyedProviders) {
+      $k = $script:keys[$id]
+      $dlg.FindName("KeyInfo_$id").Text = Get-KeyStatus $id
+      $dlg.FindName("KeyBtn_$id").Content = if ($k -and $k.source) { 'Change' } else { 'Add key' }
+      $dlg.FindName("KeyBtn_$id").IsEnabled = [bool]$k
+      $dlg.FindName("KeyDel_$id").Visibility = if ($k -and $k.saved) { 'Visible' } else { 'Collapsed' }
+    }
+  }
+  # A key saved or removed turns its provider on or off, and fetches again.
+  $setShown = {
+    param([string]$id, [bool]$on)
+    $sw = $dlg.FindName((Get-SwitchName $id))
+    if ($on -and $script:seenProviders -notcontains $id) { $script:seenProviders = @($script:seenProviders) + $id; Set-State @{ seenProviders = $script:seenProviders } }
+    if ($sw.IsChecked -ne $on) { $sw.IsChecked = $on } elseif ($script:proc) { $script:refreshPending = $true } else { Start-Refresh }
+  }
+  $askKey = {
+    param([string]$id)
+    if (Show-KeyDialog $id) { & $syncKeys; & $setShown $id $true }
+  }
+  foreach ($id in $KeyedProviders) {
+    $dlg.FindName("KeyBtn_$id").Tag = $id
+    $dlg.FindName("KeyBtn_$id").add_Click({ param($s) & $askKey ([string]$s.Tag) })
+    $dlg.FindName("KeyDel_$id").Tag = $id
+    $dlg.FindName("KeyDel_$id").add_Click({
+      param($s)
+      $script:keyRemoving = [string]$s.Tag
+      $null = Start-Keys @('remove', $script:keyRemoving) '' {
+        param($err)
+        & $syncKeys
+        # No other key on the PC: nothing left to show.
+        if (-not $script:keys[$script:keyRemoving].source) { & $setShown $script:keyRemoving $false }
+      }
+    })
+  }
+  # Switching on a provider that needs a key it doesn't have asks for one.
+  foreach ($id in $KeyedProviders) {
+    $dlg.FindName((Get-SwitchName $id)).add_Checked({
+      param($s)
+      $k = $script:keys[[string]$s.Tag]
+      if ($k -and -not $k.source) {
+        & $askKey ([string]$s.Tag)
+        # Cancelled: without a key it would only show an error.
+        if (-not $script:keys[[string]$s.Tag].source) { $s.IsChecked = $false }
+      }
+    })
+  }
+  & $syncKeys
+  $null = Start-Keys @() '' { param($err) & $syncKeys }
+
   $d.UsedOpt.IsChecked = $script:display -eq 'used'
   $d.LeftOpt.IsChecked = $script:display -ne 'used'
   $d.NormalOpt.IsChecked = $script:layout -ne 'compact'
@@ -1100,6 +1297,7 @@ $($providerRows -join "`n")
   $timer.Start()
   $null = $dlg.ShowDialog()
   $timer.Stop()
+  $script:keysDone = $null
 }
 
 # ---- tray ---------------------------------------------------------------------
@@ -1204,6 +1402,7 @@ $poll.add_Tick({
   Complete-Refresh
   Complete-Logins
   Complete-Update
+  Complete-Keys
 })
 $poll.Start()
 $tick = New-Object System.Windows.Threading.DispatcherTimer

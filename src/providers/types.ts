@@ -1,4 +1,17 @@
-export type ProviderId = "claude" | "codex" | "copilot" | "cursor" | "kilo" | "opencode-go"
+import type { KeySpec } from "./keys.ts"
+
+export type ProviderId =
+  | "claude"
+  | "codex"
+  | "copilot"
+  | "cursor"
+  | "devin"
+  | "grok"
+  | "kilo"
+  | "ollama"
+  | "opencode-go"
+  | "openrouter"
+  | "zai"
 
 /** One rate-limit window, e.g. Claude "5-Hour". */
 export interface UsageWindow {
@@ -40,8 +53,18 @@ export interface Provider {
   account?(profile?: string): Promise<string | undefined>
   /** Config folders of extra accounts, besides the default one. */
   profiles?(): Promise<string[]>
-  /** Whether the tool is set up on this machine, from local files only: the widget shows the ones it finds. */
+  /** Whether the tool is set up on this machine: the widget shows the ones it finds. */
   detect(): Promise<boolean>
+  /** Services with no CLI login: the key is found on the machine, else pasted in the widget's settings. */
+  apiKey?: ApiKeyInfo
+}
+
+export interface ApiKeyInfo {
+  readonly spec: KeySpec
+  /** Where to create a key. */
+  readonly url: string
+  /** Resolves when the service accepts the key; rejects with the reason otherwise. */
+  check(key: string, signal?: AbortSignal): Promise<void>
 }
 
 export class ProviderError extends Error {}

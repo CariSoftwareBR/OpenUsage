@@ -6,7 +6,7 @@
 
 **All your AI coding plan limits in one tiny floating widget.**
 
-Claude · Codex · Copilot · Cursor · Kilo · OpenCode Go
+Claude · Codex · Copilot · Cursor · Devin · Grok · Kilo · Ollama · OpenCode Go · OpenRouter · Z.ai
 
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows&logoColor=white)](#windows)
 [![macOS](https://img.shields.io/badge/macOS-12%2B-000000?logo=apple&logoColor=white)](#macos)
@@ -262,11 +262,12 @@ Hover a line to see every limit with its reset time, the plan and any error.
 
 ### Settings
 
-<img src="docs/settings.png" alt="OpenUsage settings: numbers, layout, version and updates" width="380">
+<img src="docs/settings.png" alt="OpenUsage settings: numbers, layout, a switch per provider, API keys, version and updates" width="380">
 
 - **Numbers:** **Used** or **Left**, the default for every limit.
 - **Layout:** **Compact** (a card per provider, a line per account: the ring, the plan and next reset, then the 5h / weekly numbers) or **Normal** (a card per account with a bar per limit). Compact leaves out providers you are not signed in to; Normal keeps them with a hint on how to sign in. A used-up limit is always a full red ring, even when showing what is left.
-- **Providers (Windows):** a switch per provider. The first time, only the tools found on the PC are on; each start looks again and turns on any tool installed since, while one you switched off stays off. Switch any of them on or off by hand; one switched off is no longer fetched or shown. The last one left on can't be switched off. (On macOS and Linux the widget shows the tools it finds.)
+- **Providers (Windows):** a switch per provider. The first time, only the tools found on the PC are on; each start looks again and turns on any tool installed since, while one you switched off stays off. A provider added by an update starts off unless its tool is found. Switch any of them on or off by hand; one switched off is no longer fetched or shown. The last one left on can't be switched off. (On macOS and Linux the widget shows the tools it finds.)
+- **API keys:** OpenRouter and Z.ai, the services without a CLI sign-in. Each row says where its key was found (OpenCode, Kilo, Crush, Claude Code, an environment variable) or that there is none yet. **Add key** checks the key with the service before keeping it (in `~/.config/openusage/`, on this computer only) and turns the provider on; **Remove** forgets it. On Windows, switching on one with no key asks for it.
 - **About:** the version and commit in use. The widget looks for a new version when it starts and once a day. **Update now** pulls it (`git pull --ff-only`) and restarts the widget; on macOS the app is rebuilt first. A copy installed from the ZIP (without Git) can't update itself: download it again.
 
 <details>
@@ -308,7 +309,7 @@ To see the raw data in a terminal: `npm run probe` (or `npm run probe -- claude 
 
 ## 🔌 Providers
 
-The widget only **reads** credentials the tools themselves already saved on your machine. It never asks you to sign in and sends nothing anywhere except each service's official API.
+The widget only **reads** credentials the tools themselves already saved on your machine. It never asks you to sign in and sends nothing anywhere except each service's own API. OpenRouter and Z.ai have no CLI login: their API key is picked up from the tools that already use it, or added once in Settings (below).
 
 | Provider | Reads from | If it shows an error |
 |---|---|---|
@@ -316,8 +317,13 @@ The widget only **reads** credentials the tools themselves already saved on your
 | Codex | `~/.codex/auth.json` (or `CODEX_HOME`); offline, falls back to the latest session log | Sign in to Codex with your ChatGPT account. API-key logins have no plan limits. |
 | Copilot | The sign-in of the Copilot editor plugins (`apps.json` in `%LOCALAPPDATA%\github-copilot` or `~/.config/github-copilot`), else the GitHub CLI (`gh auth token`) | Run `gh auth login`. The monthly premium requests are shown; on the Free plan, chat and completions. |
 | Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` on macOS, or `~/.config/Cursor/User/globalStorage/state.vscdb` on Linux | Open Cursor and sign in. |
+| Devin | The key saved by `devin auth login` (`~/.local/share/devin/credentials.toml`), else the Devin app's sign-in (`Devin/User/globalStorage/state.vscdb` in the app data folder) | Run `devin auth login`, or sign in to the Devin app. Shows the daily and weekly quota and the extra balance. |
+| Grok | The login saved by `grok login` (`~/.grok/auth.json`, or `GROK_HOME`); an expired token is renewed and written back there, like the CLI does | Run `grok login`. Shows the weekly pool and the pay-as-you-go cap. Team logins have no personal quota. |
 | Kilo | The Kilo account saved by `kilo auth login` (`~/.local/share/kilo/auth.json`) | Run `kilo auth login` with your Kilo account. Shows the credit balance and, with Kilo Pass, the month's usage. |
+| Ollama | The key Ollama creates at `~/.ollama/id_ed25519`, linked to your account by `ollama signin`; each request is signed with it, the key never leaves the machine | Shows up by itself once that key is linked to an ollama.com account (only local models: it stays out of the way). Run `ollama signin`. Shows the monthly credits, or the 5h / weekly limits on older plans. |
 | OpenCode Go | `OPENCODE_GO_API_KEY`, or the key saved by opencode's `/connect` | Run `/connect` in opencode and pick OpenCode Go. |
+| OpenRouter | A key added in Settings, else `OPENROUTER_API_KEY`, else the one OpenCode, Kilo or Crush already use, or Claude Code's when pointed at OpenRouter | No key on the computer: add one in **Settings → API keys** ([create it here](https://openrouter.ai/keys)). Shows credits used, balance, the spend today / this week / this month and the key's own cap. |
+| Z.ai | A key added in Settings, else `ZAI_API_KEY`, else the GLM Coding Plan key OpenCode, Kilo or Crush already use, or Claude Code's when pointed at `api.z.ai` | No key on the computer: add one in **Settings → API keys** ([get it here](https://z.ai/manage-apikey/apikey-list)). Needs a GLM Coding Plan. Shows the 5h and weekly limits and the month's web searches. |
 
 ### Multiple accounts
 
@@ -365,6 +371,7 @@ Layout:
 - `src/providers/`: one file per provider, all returning the same shape (`ProviderUsage` in `types.ts`).
 - `scripts/usage-json.ts`: prints every provider as one JSON array; this is what the widget calls.
 - `scripts/update.ts`: the version, and the self-update behind **Update now** (`check` / `apply`).
+- `scripts/keys.ts`: the API keys behind **Settings → API keys**: which were found, and checking and keeping a pasted one.
 - `scripts/add-account.ts`: adds another Claude or Codex account (folder, command, sign-in); the widgets' **+** button runs it.
 - `widget/usage-widget.ps1`: the WPF UI. The `.vbs` only launches it without a console.
 - `widget/openusage.ico`: the app icon, used by the tray and the shortcuts.

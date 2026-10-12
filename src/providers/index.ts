@@ -3,13 +3,30 @@ import { claude } from "./claude.ts"
 import { codex } from "./codex.ts"
 import { copilot } from "./copilot.ts"
 import { cursor } from "./cursor.ts"
+import { devin } from "./devin.ts"
+import { grok } from "./grok.ts"
 import { kilo } from "./kilo.ts"
+import { ollama } from "./ollama.ts"
 import { opencodeGo } from "./opencode-go.ts"
+import { openrouter } from "./openrouter.ts"
+import { zai } from "./zai.ts"
 import { failed, type Provider, type ProviderId, type ProviderUsage } from "./types.ts"
 
 export * from "./types.ts"
 
-export const PROVIDERS: Readonly<Record<ProviderId, Provider>> = { claude, codex, copilot, cursor, kilo, "opencode-go": opencodeGo }
+export const PROVIDERS: Readonly<Record<ProviderId, Provider>> = {
+  claude,
+  codex,
+  copilot,
+  cursor,
+  kilo,
+  "opencode-go": opencodeGo,
+  devin,
+  grok,
+  openrouter,
+  zai,
+  ollama,
+}
 
 /** Never rejects: a failing provider comes back with `error` set. */
 export async function fetchUsage(id: ProviderId, signal?: AbortSignal, profile?: string): Promise<ProviderUsage> {

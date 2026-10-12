@@ -9,7 +9,10 @@ import SwiftUI
 let refreshMinutes = 5.0
 let bundleId = "com.openusage.widget"
 let showNotification = Notification.Name("com.openusage.widget.show")
-let icons = ["claude": "\u{273B}", "codex": "\u{25CE}", "copilot": "\u{25C8}", "cursor": "\u{2B21}", "kilo": "\u{25C6}", "opencode-go": "\u{25A3}"]
+let icons = [
+  "claude": "\u{273B}", "codex": "\u{25CE}", "copilot": "\u{25C8}", "cursor": "\u{2B21}", "devin": "\u{25C7}", "grok": "\u{2726}",
+  "kilo": "\u{25C6}", "ollama": "\u{25C9}", "opencode-go": "\u{25A3}", "openrouter": "\u{21C4}", "zai": "\u{25B2}",
+]
 
 // ---- data ----------------------------------------------------------------------
 
@@ -39,6 +42,31 @@ struct ProviderUsage: Codable {
 }
 
 /** What scripts/update.ts prints. */
+/** An API key of a service with no CLI sign-in (OpenRouter, Z.ai), as scripts/keys.ts reports it. */
+struct KeyInfo: Codable {
+  let id: String
+  let name: String
+  let url: String
+  let source: String?
+  let saved: Bool
+}
+
+struct KeysResult: Codable {
+  let keys: [KeyInfo]
+  let error: String?
+}
+
+let keyedProviders = ["openrouter", "zai"]
+
+/** "No key yet", "Saved here", "Found in OpenCode", "From OPENROUTER_API_KEY". */
+func keyStatus(_ k: KeyInfo?) -> String {
+  guard let k else { return "Looking for a key..." }
+  guard let source = k.source else { return "No key yet" }
+  if k.saved { return "Saved here" }
+  if source == source.uppercased() || source.contains("/") { return "From \(source)" }
+  return "Found in \(source)"
+}
+
 struct UpdateInfo: Codable {
   var version: String?
   var commit: String?
@@ -83,9 +111,11 @@ final class Model: ObservableObject {
   @Published var display = defaults.string(forKey: "display") ?? "used"
   @Published var layout = defaults.string(forKey: "layout") == "compact" ? "compact" : "normal"
   @Published var update = UpdateState()
+  @Published var keys: [String: KeyInfo] = [:]
 
   private var proc: Process?
   private var updateProc: Process?
+  private var keysProc: Process?
 
   init() {
     // The last good result is cached on disk, so a restart (or a rate-limited first fetch) still shows numbers.
@@ -108,7 +138,9 @@ final class Model: ObservableObject {
   }
 
   /** Runs scripts/<name> with node and hands its stdout to `done` on the main thread; nil when it can't start. */
-  func runScript(_ name: String, _ args: [String], timeout: Double, done: @escaping (Data, Bool) -> Void) -> Process? {
+  func runScript(
+    _ name: String, _ args: [String], timeout: Double, env: [String: String] = [:], done: @escaping (Data, Bool) -> Void
+  ) -> Process? {
     guard let root = resource("root") else { return nil }
     let script = root + "/scripts/" + name
     let p = Process()
@@ -121,6 +153,7 @@ final class Model: ObservableObject {
       p.arguments = ["-lc", "exec node --experimental-strip-types --no-warnings \"$0\" \"$@\"", script] + args
     }
     p.currentDirectoryURL = URL(fileURLWithPath: root)
+    if !env.isEmpty { p.environment = ProcessInfo.processInfo.environment.merging(env) { $1 } }
     let out = Pipe()
     p.standardOutput = out
     p.standardError = FileHandle.nullDevice
@@ -153,6 +186,29 @@ final class Model: ObservableObject {
       return
     }
     refreshing = true
+  }
+
+  /**
+   * scripts/keys.ts: no args reads which keys are found on this Mac; "set <id>" checks the key with the service and
+   * keeps it; "remove <id>" forgets it. The key goes in an env var, never on the command line. `done` gets the error
+   * text, "" when none. False only when one is still running.
+   */
+  @discardableResult
+  func runKeys(_ args: [String], key: String? = nil, done: ((String) -> Void)? = nil) -> Bool {
+    guard keysProc == nil else { return false }
+    keysProc = runScript("keys.ts", args, timeout: 40, env: key.map { ["OPENUSAGE_KEY": $0] } ?? [:]) { raw, timedOut in
+      self.keysProc = nil
+      var error = timedOut ? "timed out" : ""
+      if let r = try? JSONDecoder().decode(KeysResult.self, from: raw) {
+        self.keys = Dictionary(uniqueKeysWithValues: r.keys.map { ($0.id, $0) })
+        error = r.error ?? ""
+      } else if error.isEmpty {
+        error = "couldn't read the keys"
+      }
+      done?(error)
+    }
+    if keysProc == nil { done?("node not found") }
+    return true
   }
 
   /** "check" asks how far behind the remote this copy is; "apply" fast-forwards it and rebuilds the app. */
@@ -264,7 +320,10 @@ enum C {
   static let ok = themed(0x2E8B57, 0x5BBF86)
 }
 
-let accents: [String: Color] = ["claude": themed(0xD97757, 0xD97757), "codex": themed(0x0F8A6C, 0x3DBE9C), "copilot": themed(0x8250DF, 0xA371F7), "kilo": themed(0xA68A00, 0xF2D33C)]
+let accents: [String: Color] = [
+  "claude": themed(0xD97757, 0xD97757), "codex": themed(0x0F8A6C, 0x3DBE9C), "copilot": themed(0x8250DF, 0xA371F7), "kilo": themed(0xA68A00, 0xF2D33C),
+  "devin": themed(0x2563EB, 0x60A5FA), "openrouter": themed(0x4F46E5, 0x818CF8), "zai": themed(0x0E7490, 0x22D3EE),
+]
 
 func level(_ pct: Double) -> Color? { pct >= 80 ? C.error : pct >= 50 ? C.warn : nil }
 
@@ -662,6 +721,7 @@ struct DialogButton: View {
 struct SettingsView: View {
   @ObservedObject var m: Model
   let close: () -> Void
+  let askKey: (String) -> Void
 
   var body: some View {
     let u = m.update
@@ -694,6 +754,26 @@ struct SettingsView: View {
       }
       .padding(.top, 8)
       Rectangle().fill(C.divider).frame(height: 1).padding(.top, 16).padding(.bottom, 14)
+      caption("API KEYS")
+      Text("Found by itself when OpenCode, Kilo, Crush or Claude Code already use one; otherwise add it here.")
+        .font(.system(size: 11.5)).foregroundColor(C.muted).fixedSize(horizontal: false, vertical: true)
+        .padding(.bottom, 10)
+      ForEach(keyedProviders, id: \.self) { pid in
+        let k = m.keys[pid]
+        HStack(spacing: 6) {
+          VStack(alignment: .leading, spacing: 1) {
+            Text("\(icons[pid] ?? "")  ").foregroundColor(accents[pid] ?? C.muted) + Text(k?.name ?? pid)
+            Text(keyStatus(k)).font(.system(size: 11)).foregroundColor(C.muted)
+          }
+          Spacer()
+          if k?.saved == true {
+            DialogButton(title: "Remove") { m.runKeys(["remove", pid]) { _ in m.refresh() } }
+          }
+          DialogButton(title: k?.source != nil ? "Change" : "Add key", enabled: k != nil) { askKey(pid) }
+        }
+        .padding(.bottom, 10)
+      }
+      Rectangle().fill(C.divider).frame(height: 1).padding(.top, 4).padding(.bottom, 14)
       caption("ABOUT")
       HStack(spacing: 12) {
         Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 40, height: 40)
@@ -1020,7 +1100,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       p.orderFrontRegardless()
       return
     }
-    let host = HostingView(rootView: SettingsView(m: model, close: { [weak self] in self?.closeSettings() }))
+    model.runKeys([])
+    let host = HostingView(
+      rootView: SettingsView(
+        m: model, close: { [weak self] in self?.closeSettings() }, askKey: { [weak self] in self?.askKey($0) }))
     let size = host.fittingSize
     host.frame.size = size
     let p = Panel(
@@ -1111,6 +1194,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       } else if waited > 30 * 60 {
         t.invalidate()
       }
+    }
+  }
+
+  /** Asks for an API key, checks it with the service, keeps it and fetches again; asks again on a bad key. */
+  func askKey(_ pid: String) {
+    let info = model.keys[pid]
+    let name = info?.name ?? pid
+    let alert = NSAlert()
+    alert.messageText = "\(name) API key"
+    alert.addButton(withTitle: "Save")
+    alert.addButton(withTitle: "Cancel")
+    if info?.url != nil { alert.addButton(withTitle: "Create a key\u{2026}") }
+    let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+    field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+    alert.accessoryView = field
+    alert.window.initialFirstResponder = field
+    NSApp.activate(ignoringOtherApps: true)
+    let intro = "\(name) has no app sign-in to read, so it needs an API key. It stays on this Mac and goes to \(name) alone."
+    var note = intro
+    while true {
+      alert.informativeText = note
+      let response = alert.runModal()
+      if response == .alertThirdButtonReturn {
+        if let url = info.flatMap({ URL(string: $0.url) }) { NSWorkspace.shared.open(url) }
+        continue
+      }
+      guard response == .alertFirstButtonReturn else { return }
+      let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !key.isEmpty else {
+        note = "Paste a key.\n\n\(intro)"
+        continue
+      }
+      // The check runs in node; keep the run loop turning (and this prompt away) until it answers.
+      var error: String?
+      guard model.runKeys(["set", pid], key: key, done: { error = $0 }) else {
+        note = "Busy, try again in a moment.\n\n\(intro)"
+        continue
+      }
+      while error == nil { RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1)) }
+      if let error, !error.isEmpty {
+        note = "\(error)\n\n\(intro)"
+        continue
+      }
+      model.refresh()
+      return
     }
   }
 

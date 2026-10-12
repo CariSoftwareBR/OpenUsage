@@ -44,7 +44,38 @@ REFRESH_MINUTES = 5
 APP_ID = "com.openusage.widget"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(ROOT, "docs", "icon.png")
-ICONS = {"claude": "✻", "codex": "◎", "copilot": "◈", "cursor": "⬡", "kilo": "◆", "opencode-go": "▣"}
+ICONS = {
+    "claude": "✻",
+    "codex": "◎",
+    "copilot": "◈",
+    "cursor": "⬡",
+    "devin": "◇",
+    "grok": "✦",
+    "kilo": "◆",
+    "ollama": "◉",
+    "opencode-go": "▣",
+    "openrouter": "⇄",
+    "zai": "▲",
+}
+
+# Services with no CLI sign-in: their API key is found on the machine or added in Settings (scripts/keys.ts).
+KEYED_PROVIDERS = ["openrouter", "zai"]
+PROVIDER_NAMES = {"openrouter": "OpenRouter", "zai": "Z.ai"}
+
+
+def key_status(k):
+    """No key yet, Saved here, Found in OpenCode, From OPENROUTER_API_KEY."""
+    if not k:
+        return "Looking for a key..."
+    source = k.get("source")
+    if not source:
+        return "No key yet"
+    if k.get("saved"):
+        return "Saved here"
+    if source.isupper() or "/" in source or "\\" in source:
+        return f"From {source}"
+    return f"Found in {source}"
+
 
 HOME = os.path.expanduser("~")
 CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
@@ -173,6 +204,9 @@ LIGHT_DARK = {
     "codex": ("#0F8A6C", "#3DBE9C"),
     "copilot": ("#8250DF", "#A371F7"),
     "kilo": ("#A68A00", "#F2D33C"),
+    "devin": ("#2563EB", "#60A5FA"),
+    "openrouter": ("#4F46E5", "#818CF8"),
+    "zai": ("#0E7490", "#22D3EE"),
 }
 
 C = {}
@@ -398,6 +432,9 @@ class Model:
         self.update = {"busy": "", "version": "", "commit": "", "behind": 0, "error": "", "checked": False}
         self.proc = None
         self.update_proc = None
+        # API keys of OpenRouter / Z.ai, from scripts/keys.ts: {id: {name, url, source, saved}}.
+        self.keys = {}
+        self.keys_proc = None
         # The last good result is cached on disk, so a restart (or a rate-limited first fetch) still shows numbers.
         cache = read_json(CACHE_FILE, {})
         if isinstance(cache, dict) and isinstance(cache.get("data"), list):
@@ -417,7 +454,7 @@ class Model:
         save_setting("layout", v)
         self.changed()
 
-    def run_script(self, name, args, timeout, done):
+    def run_script(self, name, args, timeout, done, env=None):
         """Runs scripts/<name> with node and hands its stdout to `done`; None when it can't start."""
         script = os.path.join(ROOT, "scripts", name)
         flags = ["--experimental-strip-types", "--no-warnings", script] + args
@@ -425,6 +462,8 @@ class Model:
         argv = [node] + flags if node else ["/bin/bash", "-lc", 'exec node "$@"', "node"] + flags
         launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
         launcher.set_cwd(ROOT)
+        for k, v in (env or {}).items():
+            launcher.setenv(k, v, True)
         try:
             p = launcher.spawnv(argv)
         except GLib.Error:
@@ -449,6 +488,33 @@ class Model:
 
         p.communicate_utf8_async(None, None, finished)
         return p
+
+    def run_keys(self, args, key=None, done=None):
+        """
+        scripts/keys.ts: no args reads which keys are found on this machine; "set <id>" checks the key with the
+        service and keeps it; "remove <id>" forgets it. The key goes in an env var, never on the command line.
+        `done` gets the error text, "" when none. False only when one is still running.
+        """
+        if self.keys_proc is not None:
+            return False
+
+        def finished(raw, timed_out):
+            self.keys_proc = None
+            error = "timed out" if timed_out else ""
+            try:
+                r = json.loads(raw)
+                self.keys = {k["id"]: k for k in r.get("keys", [])}
+                error = r.get("error") or ""
+            except (ValueError, TypeError, KeyError):
+                error = error or "couldn't read the keys"
+            if done:
+                done(error)
+            self.changed()
+
+        self.keys_proc = self.run_script("keys.ts", args, 40, finished, {"OPENUSAGE_KEY": key} if key else None)
+        if self.keys_proc is None and done:
+            done("node not found")
+        return True
 
     def refresh(self):
         if self.proc is not None:
@@ -1120,6 +1186,7 @@ class App(Gtk.Application):
         w.set_skip_taskbar_hint(True)
         w.connect("delete-event", lambda *_: self.close_settings() or True)
         self.settings_win = w
+        self.model.run_keys([])
         self.build_settings()
         # Beside the widget: to its left when there is room, else to its right.
         x, y = self.win.get_position()
@@ -1178,6 +1245,23 @@ class App(Gtk.Application):
             False, False, 0,
         )
         root.pack_start(margins(divider(), top=16, bottom=14), False, False, 0)
+        root.pack_start(caption("API KEYS"), False, False, 0)
+        root.pack_start(
+            margins(label(span("Found by itself when OpenCode, Kilo, Crush or Claude Code already use one; otherwise add it here.", 11.5, C["muted"]), wrap=True), bottom=10),
+            False, False, 0,
+        )
+        for pid in KEYED_PROVIDERS:
+            k = m.keys.get(pid)
+            row = hbox(6)
+            text = vbox(1)
+            text.pack_start(label(span(f"{ICONS.get(pid, '')}  ", 13, C.get(pid, C["muted"])) + span(PROVIDER_NAMES[pid], 13)), False, False, 0)
+            text.pack_start(label(span(key_status(k), 11, C["muted"])), False, False, 0)
+            row.pack_start(text, True, True, 0)
+            row.pack_end(dialog_button("Change" if k and k.get("source") else "Add key", lambda pid=pid: self.ask_key(pid), enabled=bool(k)), False, False, 0)
+            if k and k.get("saved"):
+                row.pack_end(dialog_button("Remove", lambda pid=pid: m.run_keys(["remove", pid], done=lambda _e: m.refresh())), False, False, 0)
+            root.pack_start(margins(row, bottom=10), False, False, 0)
+        root.pack_start(margins(divider(), top=4, bottom=14), False, False, 0)
         root.pack_start(caption("ABOUT"), False, False, 0)
         about = hbox(12)
         if os.path.isfile(ICON_PATH):
@@ -1391,6 +1475,60 @@ class App(Gtk.Application):
             return waited[0] <= 30 * 60
 
         GLib.timeout_add_seconds(3, poll)
+
+    def ask_key(self, pid):
+        """Asks for an API key, checks it with the service, keeps it and fetches again; stays open on a bad key."""
+        m, name = self.model, PROVIDER_NAMES[pid]
+        url = (m.keys.get(pid) or {}).get("url", "")
+        dialog = Gtk.MessageDialog(
+            transient_for=self.settings_win or self.win,
+            modal=True,
+            message_type=Gtk.MessageType.OTHER,
+            buttons=Gtk.ButtonsType.NONE,
+            text=f"{name} API key",
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        save = dialog.add_button("Save", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        dialog.set_keep_above(True)
+        area = dialog.get_message_area()
+        if url:
+            link = Gtk.LinkButton.new_with_label(url, "Create one at " + url.split("://")[-1].rstrip("/"))
+            link.set_halign(Gtk.Align.START)
+            area.pack_start(link, False, False, 0)
+        entry = Gtk.Entry()
+        entry.set_visibility(False)
+        entry.set_activates_default(True)
+        entry.set_width_chars(36)
+        area.pack_start(entry, False, False, 0)
+        intro = f"{name} has no app sign-in to read, so it needs an API key. It stays on this computer and goes to {name} alone."
+        dialog.format_secondary_text(intro)
+        save.set_sensitive(False)
+        entry.connect("changed", lambda e: save.set_sensitive(bool(e.get_text().strip())))
+
+        def checked(error):
+            if error:
+                dialog.format_secondary_text(f"{error}\n\n{intro}")
+                entry.set_sensitive(True)
+                save.set_sensitive(True)
+                entry.grab_focus()
+            else:
+                dialog.destroy()
+                m.refresh()
+
+        def respond(_d, response):
+            if response != Gtk.ResponseType.OK:
+                dialog.destroy()
+                return
+            entry.set_sensitive(False)
+            save.set_sensitive(False)
+            dialog.format_secondary_text(f"Checking the key with {name}...")
+            if not m.run_keys(["set", pid], entry.get_text().strip(), checked):
+                checked("Busy, try again in a moment.")
+
+        dialog.connect("response", respond)
+        dialog.show_all()
+        entry.grab_focus()
 
     def ask_account_name(self, k, suggested):
         """Native prompt for the new account's command name; None when cancelled."""
