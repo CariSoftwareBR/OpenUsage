@@ -22,6 +22,8 @@
 
 <img src="docs/readme/install.svg" alt="Your AI agent installs OpenUsage: Node.js ready, downloaded, desktop shortcut, widget open" width="100%">
 
+**Ask your agent:**
+
 ```text
 Install this plugin: https://github.com/paulocarinhena/OpenUsage
 ```
