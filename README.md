@@ -30,9 +30,11 @@ Claude · Codex · Copilot · Cursor · Devin · Grok · Kilo · Ollama · OpenC
 ### ✨ What you get
 
 - **Every limit at a glance:** 5-hour, weekly and billing-cycle windows, each with its reset time.
-- **Two layouts:** **Compact** (above) gives each provider one card and each account one line: a double ring (outer = weekly, inner = 5 hours), the plan and next reset, and the 5h / weekly numbers. **Normal** shows every limit as a bar.
+- **Three layouts:** **Compact** (above) gives each provider one card and each account one line: a double ring (outer = weekly, inner = 5 hours), the plan and next reset, and the 5h / weekly numbers. **Normal** shows every limit as a bar. **Strip** packs everything into one slim pill you can park at the edge of the screen.
+- **Rings or bars:** Compact and Strip can draw each limit as a ring or as a slim bar (Settings → **Gauges**); bars make Compact even shorter.
+- **The providers' own logos** and some life: cards and bars ease in, a limit at 80% or more glows, a light sweeps across the widget while it refreshes, and the settings animate too.
 - **Multiple accounts:** two Claude or Codex logins side by side, added from the **+** button.
-- **Color warnings:** rings and bars turn **orange at 50%** and **red at 80%**; a used-up limit is always a full red ring.
+- **Color warnings:** rings and bars turn **orange at 50%** and **red at 80%** (and breathe a soft glow); a used-up limit is always a full red ring.
 - **Used / Left:** show how much you have used or how much is left.
 - **Settings and updates:** the **⚙** button picks the layout and Used/Left, shows the version and updates the widget in one click.
 - **Plan and credits:** plan badge (PRO, PLUS, MAX…), credit balance, on-demand and bonus spend.
@@ -207,7 +209,7 @@ As on Windows, a provider with an `"error"` field only means the user does not u
 python3 -c 'import gi; gi.require_version("Gtk", "3.0")' && node -v && git --version
 ```
 
-If the GTK bindings are missing, install them: `sudo apt install python3-gi gir1.2-gtk-3.0` (Debian, Ubuntu, Mint, Zorin), `sudo dnf install python3-gobject gtk3` (Fedora) or `sudo pacman -S python-gobject gtk3` (Arch). Most GNOME, Cinnamon, MATE and Xfce desktops already have them. If `node` is missing or older than `v22.6.0`, install it from your package manager, [nodejs.org](https://nodejs.org) or nvm.
+If the GTK bindings are missing, install them: `sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0` (Debian, Ubuntu, Mint, Zorin), `sudo dnf install python3-gobject gtk3` (Fedora) or `sudo pacman -S python-gobject gtk3` (Arch). Most GNOME, Cinnamon, MATE and Xfce desktops already have them. If `node` is missing or older than `v22.6.0`, install it from your package manager, [nodejs.org](https://nodejs.org) or nvm.
 
 #### Step 2: download (or update), install and open
 
@@ -262,10 +264,11 @@ Hover a line to see every limit with its reset time, the plan and any error.
 
 ### Settings
 
-<img src="docs/settings.png" alt="OpenUsage settings: numbers, layout, a switch per provider, API keys, version and updates" width="380">
+<img src="docs/settings.png" alt="OpenUsage settings: numbers, layout, gauges, a switch per provider, API keys, version and updates" width="380">
 
 - **Numbers:** **Used** or **Left**, the default for every limit.
-- **Layout:** **Compact** (a card per provider, a line per account: the ring, the plan and next reset, then the 5h / weekly numbers) or **Normal** (a card per account with a bar per limit). Compact leaves out providers you are not signed in to; Normal keeps them with a hint on how to sign in. A used-up limit is always a full red ring, even when showing what is left.
+- **Layout:** **Compact** (a card per provider, a line per account: the ring, the plan and next reset, then the 5h / weekly numbers), **Normal** (a card per account with a bar per limit) or **Strip** (one slim pill, a chip per account with the provider's logo; drag it anywhere, its ⟳ and ⚙ light up under the pointer). Compact and Strip leave out providers you are not signed in to; Normal keeps them with a hint on how to sign in. A used-up limit is always a full red ring, even when showing what is left. On the right half of the screen the widget keeps its right edge in place, so the strip grows leftward.
+- **Gauges:** **Rings** or **Bars**, for Compact and Strip. With bars each account in Compact takes a single short line: its name and a slim bar per limit.
 - **Providers (Windows):** a switch per provider. The first time, only the tools found on the PC are on; each start looks again and turns on any tool installed since, while one you switched off stays off. A provider added by an update starts off unless its tool is found. Switch any of them on or off by hand; one switched off is no longer fetched or shown. The last one left on can't be switched off. (On macOS and Linux the widget shows the tools it finds.)
 - **API keys:** OpenRouter and Z.ai, the services without a CLI sign-in. Each row says where its key was found (OpenCode, Kilo, Crush, Claude Code, an environment variable) or that there is none yet. **Add key** checks the key with the service before keeping it (in `~/.config/openusage/`, on this computer only) and turns the provider on; **Remove** forgets it. On Windows, switching on one with no key asks for it.
 - **About:** the version and commit in use. The widget looks for a new version when it starts and once a day. **Update now** pulls it (`git pull --ff-only`) and restarts the widget; on macOS the app is rebuilt first. A copy installed from the ZIP (without Git) can't update itself: download it again.
@@ -274,6 +277,22 @@ Hover a line to see every limit with its reset time, the plan and any error.
 <summary>Normal layout</summary>
 
 <img src="docs/screenshot-normal.png" alt="OpenUsage widget in normal mode: a card per account with a bar per limit" width="320">
+
+</details>
+
+<details>
+<summary>Compact with bars</summary>
+
+<img src="docs/screenshot-compact-bars.png" alt="OpenUsage widget in compact mode with bars: a short line per account with a slim bar per limit" width="320">
+
+</details>
+
+<details>
+<summary>Strip, with rings or bars</summary>
+
+<img src="docs/screenshot-strip.png" alt="OpenUsage strip with rings: one slim pill, a ring around each provider's logo" width="592">
+
+<img src="docs/screenshot-strip-bars.png" alt="OpenUsage strip with bars: one slim pill, a slim bar per limit" width="816">
 
 </details>
 
@@ -377,6 +396,7 @@ Layout:
 - `widget/openusage.ico`: the app icon, used by the tray and the shortcuts.
 - `widget-mac/OpenUsage.swift`: the macOS app (AppKit + SwiftUI). `widget-mac/build.sh` compiles it into `OpenUsage.app`.
 - `widget-linux/openusage.py`: the Linux app (Python + GTK 3). `widget-linux/install.sh` adds it to the app menu.
+- `assets/providers/*.svg`: the provider logos the three widgets draw (one path each, filled with the provider's color). Linux renders them with librsvg, the usual GTK SVG loader; without it the widget falls back to a glyph.
 
 ## ☕ Support
 
@@ -387,3 +407,5 @@ If OpenUsage saves you from hitting a limit mid-task, you can [buy me a coffee](
 ## 📄 License
 
 [Apache 2.0](LICENSE)
+
+The provider logos in `assets/providers` come from [OpenUsage for macOS](https://github.com/robinebers/openusage) (MIT, Copyright (c) 2026 Robin Ebers); the marks belong to their companies.

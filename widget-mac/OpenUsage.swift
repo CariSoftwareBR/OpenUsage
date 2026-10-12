@@ -109,7 +109,9 @@ final class Model: ObservableObject {
   @Published var refreshing = false
   @Published var lastError = ""
   @Published var display = defaults.string(forKey: "display") ?? "used"
-  @Published var layout = defaults.string(forKey: "layout") == "compact" ? "compact" : "normal"
+  @Published var layout = ["compact", "bar"].contains(defaults.string(forKey: "layout") ?? "") ? defaults.string(forKey: "layout")! : "normal"
+  /** How compact and strip draw a limit: "ring" or "bar" (a slim meter). */
+  @Published var gauge = defaults.string(forKey: "gauge") == "bar" ? "bar" : "ring"
   @Published var update = UpdateState()
   @Published var keys: [String: KeyInfo] = [:]
 
@@ -135,6 +137,11 @@ final class Model: ObservableObject {
   func setLayout(_ v: String) {
     layout = v
     defaults.set(v, forKey: "layout")
+  }
+
+  func setGauge(_ v: String) {
+    gauge = v
+    defaults.set(v, forKey: "gauge")
   }
 
   /** Runs scripts/<name> with node and hands its stdout to `done` on the main thread; nil when it can't start. */
@@ -275,7 +282,7 @@ final class Model: ObservableObject {
    * the normal layout keeps it, with the hint on how to sign in.
    */
   var shown: [ProviderUsage] {
-    if layout != "compact" { return data }
+    if layout == "normal" { return data }
     return data.filter { $0.account != nil || !$0.windows.isEmpty || !$0.extras.isEmpty || $0.error == nil }
   }
 
@@ -362,6 +369,353 @@ func formatAgo(_ ms: Double?) -> String {
   return "updated \(Int((Double(m) / 60).rounded())) h ago"
 }
 
+// ---- provider marks ----------------------------------------------------------------
+// The providers' own marks (assets/providers/*.svg, one path each), filled with the provider's color;
+// the glyphs in `icons` stand in for any without one.
+
+/** Minimal SVG path parser: M L H V C S Q T Z, absolute and relative, implicit repeats (no arcs; the marks use none). */
+func parseSVGPath(_ d: String) -> Path {
+  var path = Path()
+  let chars = Array(d)
+  let n = chars.count
+  var i = 0
+  var cur = CGPoint.zero
+  var start = CGPoint.zero
+  var lastControl: CGPoint?
+  var cmd: Character = " "
+  var prevCubic = false
+  var prevQuad = false
+
+  func skip() {
+    while i < n, chars[i] == " " || chars[i] == "," || chars[i] == "\n" || chars[i] == "\t" || chars[i] == "\r" { i += 1 }
+  }
+  func number() -> CGFloat? {
+    skip()
+    var t = ""
+    if i < n, chars[i] == "+" || chars[i] == "-" {
+      t.append(chars[i])
+      i += 1
+    }
+    var dot = false
+    while i < n {
+      let c = chars[i]
+      if c.isNumber {
+        t.append(c)
+      } else if c == "." && !dot {
+        dot = true
+        t.append(c)
+      } else if c == "e" || c == "E" {
+        t.append(c)
+        if i + 1 < n, chars[i + 1] == "+" || chars[i + 1] == "-" {
+          i += 1
+          t.append(chars[i])
+        }
+      } else {
+        break
+      }
+      i += 1
+    }
+    return Double(t).map { CGFloat($0) }
+  }
+  func point(_ rel: Bool) -> CGPoint? {
+    guard let x = number(), let y = number() else { return nil }
+    return rel ? CGPoint(x: cur.x + x, y: cur.y + y) : CGPoint(x: x, y: y)
+  }
+  func reflected() -> CGPoint {
+    guard let c = lastControl else { return cur }
+    return CGPoint(x: 2 * cur.x - c.x, y: 2 * cur.y - c.y)
+  }
+
+  while i < n {
+    skip()
+    if i >= n { break }
+    if chars[i].isLetter {
+      cmd = chars[i]
+      i += 1
+    }
+    let rel = cmd.isLowercase
+    var ok = true
+    var cubic = false
+    var quad = false
+    switch cmd {
+    case "M", "m":
+      if let p = point(rel) {
+        path.move(to: p)
+        cur = p
+        start = p
+        cmd = rel ? "l" : "L"
+      } else { ok = false }
+    case "L", "l":
+      if let p = point(rel) {
+        path.addLine(to: p)
+        cur = p
+      } else { ok = false }
+    case "H", "h":
+      if let x = number() {
+        cur = CGPoint(x: rel ? cur.x + x : x, y: cur.y)
+        path.addLine(to: cur)
+      } else { ok = false }
+    case "V", "v":
+      if let y = number() {
+        cur = CGPoint(x: cur.x, y: rel ? cur.y + y : y)
+        path.addLine(to: cur)
+      } else { ok = false }
+    case "C", "c":
+      if let c1 = point(rel), let c2 = point(rel), let e = point(rel) {
+        path.addCurve(to: e, control1: c1, control2: c2)
+        cur = e
+        lastControl = c2
+        cubic = true
+      } else { ok = false }
+    case "S", "s":
+      if let c2 = point(rel), let e = point(rel) {
+        path.addCurve(to: e, control1: prevCubic ? reflected() : cur, control2: c2)
+        cur = e
+        lastControl = c2
+        cubic = true
+      } else { ok = false }
+    case "Q", "q":
+      if let c = point(rel), let e = point(rel) {
+        path.addQuadCurve(to: e, control: c)
+        cur = e
+        lastControl = c
+        quad = true
+      } else { ok = false }
+    case "T", "t":
+      if let e = point(rel) {
+        let c = prevQuad ? reflected() : cur
+        path.addQuadCurve(to: e, control: c)
+        cur = e
+        lastControl = c
+        quad = true
+      } else { ok = false }
+    case "Z", "z":
+      path.closeSubpath()
+      cur = start
+      // A number right after Z has no command to belong to.
+      cmd = " "
+    default:
+      ok = false
+    }
+    if !ok { break }
+    prevCubic = cubic
+    prevQuad = quad
+  }
+  return path
+}
+
+final class Marks {
+  static var cache: [String: Path] = [:]
+  static var missing = Set<String>()
+
+  static func path(_ id: String) -> Path? {
+    let name = id == "opencode-go" ? "opencode" : id
+    if let p = cache[name] { return p }
+    if missing.contains(name) { return nil }
+    guard let root = resource("root"),
+      let svg = try? String(contentsOfFile: root + "/assets/providers/\(name).svg", encoding: .utf8),
+      let re = try? NSRegularExpression(pattern: #"\sd="([^"]+)""#)
+    else {
+      missing.insert(name)
+      return nil
+    }
+    let ns = svg as NSString
+    let ds = re.matches(in: svg, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) }
+    if ds.isEmpty {
+      missing.insert(name)
+      return nil
+    }
+    let p = parseSVGPath(ds.joined(separator: " "))
+    cache[name] = p
+    return p
+  }
+}
+
+/** A mark fitted to its frame by its real bounds, so every provider looks the same size. */
+struct MarkShape: Shape {
+  let mark: Path
+
+  func path(in rect: CGRect) -> Path {
+    let b = mark.boundingRect
+    guard b.width > 0, b.height > 0 else { return mark }
+    let k = min(rect.width / b.width, rect.height / b.height)
+    return mark
+      .applying(CGAffineTransform(translationX: -b.midX, y: -b.midY))
+      .applying(CGAffineTransform(scaleX: k, y: k))
+      .applying(CGAffineTransform(translationX: rect.midX, y: rect.midY))
+  }
+}
+
+struct Logo: View {
+  let id: String
+  let color: Color
+  var size: CGFloat = 13
+
+  var body: some View {
+    if let mark = Marks.path(id) {
+      MarkShape(mark: mark).fill(color).frame(width: size, height: size)
+    } else {
+      Text(icons[id] ?? "").font(.system(size: size * 0.9)).foregroundColor(color)
+    }
+  }
+}
+
+/** Mark + name, for card headers and settings rows. */
+struct LogoTitle: View {
+  let id: String
+  let text: String
+  var size: CGFloat = 13.5
+  var weight: Font.Weight = .semibold
+
+  var body: some View {
+    HStack(spacing: 7) {
+      Logo(id: id, color: accents[id] ?? C.text, size: size + 0.5)
+      Text(text).font(.system(size: size, weight: weight))
+    }
+  }
+}
+
+// ---- motion ---------------------------------------------------------------------------
+
+/** 0..1..0 breathing over `period` seconds. */
+func breathe(_ date: Date, _ period: Double = 2.2) -> Double {
+  0.5 - 0.5 * cos(2 * Double.pi * date.timeIntervalSinceReferenceDate / period)
+}
+
+/** A limit at 80% or more breathes a soft glow in its warning color. */
+struct Glow: ViewModifier {
+  let on: Bool
+  let color: Color
+  var radius: CGFloat = 6
+
+  @ViewBuilder func body(content: Content) -> some View {
+    if on {
+      TimelineView(.animation) { tl in
+        content.shadow(color: color.opacity(0.15 + 0.75 * breathe(tl.date)), radius: radius)
+      }
+    } else {
+      content
+    }
+  }
+}
+
+/** First show: blocks fade in and rise one after the other. */
+struct Intro: ViewModifier {
+  let index: Int
+  var step: Double = 0.07
+  @StateObject private var shown = LocalState(false)
+
+  func body(content: Content) -> some View {
+    content
+      .opacity(shown.value ? 1 : 0)
+      .offset(y: shown.value ? 0 : 10)
+      .onAppear {
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.68).delay(Double(index) * step)) { shown.value = true }
+      }
+  }
+}
+
+/** Cards: the border lights up and the card lifts a little under the pointer. */
+struct Lift: ViewModifier {
+  let radius: CGFloat
+  @StateObject private var hover = LocalState(false)
+
+  func body(content: Content) -> some View {
+    content
+      .overlay(RoundedRectangle(cornerRadius: radius).stroke(C.border, lineWidth: 1).opacity(hover.value ? 1 : 0))
+      .offset(y: hover.value ? -2 : 0)
+      .animation(.spring(response: 0.3, dampingFraction: 0.6), value: hover.value)
+      .onHover { hover.value = $0 }
+  }
+}
+
+/** While a refresh runs, a soft light sweeps across the widget. */
+struct Shimmer: View {
+  let radius: CGFloat
+  var diagonal = true
+
+  var body: some View {
+    TimelineView(.animation) { tl in
+      let t = tl.date.timeIntervalSinceReferenceDate / 1.3
+      let k = 0.5 - 0.5 * cos(Double.pi * (t - floor(t)))
+      let c = -0.2 + 1.4 * k
+      LinearGradient(
+        stops: [
+          .init(color: C.text.opacity(0), location: 0), .init(color: C.text.opacity(0.11), location: 0.5),
+          .init(color: C.text.opacity(0), location: 1),
+        ],
+        startPoint: UnitPoint(x: c - 0.25, y: diagonal ? -0.2 : 0.5),
+        endPoint: UnitPoint(x: c + 0.25, y: diagonal ? 1.2 : 0.5))
+    }
+    .clipShape(RoundedRectangle(cornerRadius: radius))
+    .allowsHitTesting(false)
+  }
+}
+
+/** A rounded track whose fill slides in from the left, in a gradient of its color. */
+struct Meter: View {
+  let used: Double
+  var display = "used"
+  let color: Color
+  var width: CGFloat? = nil
+  var height: CGFloat = 4
+  var delay: Double = 0
+  @StateObject private var appeared = LocalState(false)
+
+  var body: some View {
+    // A used-up limit stays full (in red), whether numbers show used or left.
+    let value = used >= 100 ? 100 : max(0, min(100, display == "used" ? used : 100 - used))
+    let p = appeared.value ? CGFloat(value / 100) : 0
+    GeometryReader { g in
+      ZStack(alignment: .leading) {
+        Capsule().fill(C.track)
+        if p > 0 {
+          Capsule()
+            .fill(LinearGradient(colors: [color.opacity(0.55), color], startPoint: .leading, endPoint: .trailing))
+            .frame(width: max(height, g.size.width * p))
+            .modifier(Glow(on: used >= 80, color: color, radius: 4))
+        }
+      }
+    }
+    .frame(width: width, height: height)
+    .animation(.easeOut(duration: 0.55), value: p)
+    .onAppear { withAnimation(.easeOut(duration: 0.75).delay(delay)) { appeared.value = true } }
+  }
+}
+
+/** A few letters, so meters line up: "Credits" -> "cr", "Daily" -> "day". */
+func shortSlot(_ w: UsageWindow) -> String {
+  let n = slotName(w)
+  if n.hasPrefix("Credit") { return "cr" }
+  if n.hasPrefix("Daily") { return "day" }
+  return n.count > 3 ? String(n.prefix(3)).lowercased() : n
+}
+
+/** 5h ▬▬▬▬▭▭ 72% */
+struct MeterLine: View {
+  let w: UsageWindow
+  let display: String
+  let accent: Color
+  let length: CGFloat
+  let index: Int
+
+  var body: some View {
+    let lv = level(w.usedPct)
+    HStack(spacing: 0) {
+      Text(shortSlot(w)).font(.system(size: 10)).foregroundColor(C.muted).frame(minWidth: 16, alignment: .leading)
+      Meter(used: w.usedPct, display: display, color: lv ?? accent, width: length, height: 5, delay: 0.12 + 0.07 * Double(index))
+        .padding(.leading, 3)
+        .padding(.trailing, 5)
+      Text("\(Int(shown(w, display).rounded()))%").font(.system(size: 11, weight: .semibold)).foregroundColor(lv ?? C.text)
+        .frame(minWidth: 27, alignment: .leading)
+    }
+  }
+}
+
+func baseName(_ u: ProviderUsage) -> String {
+  u.name.replacingOccurrences(of: " \\(.*\\)$", with: "", options: .regularExpression)
+}
+
 // ---- views -----------------------------------------------------------------------
 
 /// View-local state without `@State`: in recent SDKs `@State` is a macro whose plugin only ships with
@@ -374,12 +728,14 @@ final class LocalState<Value>: ObservableObject {
 struct HeaderButton: View {
   let title: String
   let help: String
+  /** The refresh arrow turns while a refresh runs. */
+  var spinning = false
   let action: () -> Void
   @StateObject private var hover = LocalState(false)
 
   var body: some View {
     Button(action: action) {
-      Text(title)
+      glyph
         .font(.system(size: 12))
         .foregroundColor(hover.value ? C.text : C.muted)
         .padding(.horizontal, 6)
@@ -391,33 +747,29 @@ struct HeaderButton: View {
     .help(help)
     .onHover { hover.value = $0 }
   }
-}
 
-struct Bar: View {
-  let pct: Double
-  let color: Color
-
-  var body: some View {
-    GeometryReader { g in
-      ZStack(alignment: .leading) {
-        Capsule().fill(C.track)
-        Capsule().fill(color).frame(width: g.size.width * CGFloat(max(0, min(100, pct))) / 100)
+  @ViewBuilder var glyph: some View {
+    if spinning {
+      TimelineView(.animation) { tl in
+        let turns = tl.date.timeIntervalSinceReferenceDate / 0.9
+        Text(title).rotationEffect(.degrees((turns - floor(turns)) * 360))
       }
+    } else {
+      Text(title)
     }
-    .frame(height: 4)
   }
 }
 
 struct Card: View {
   let u: ProviderUsage
   let display: String
+  var index = 0
 
   var body: some View {
     let hasData = !u.windows.isEmpty || !u.extras.isEmpty
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        (Text("\(icons[u.id] ?? "")  ").foregroundColor(C.muted) + Text(u.name))
-          .font(.system(size: 13.5, weight: .semibold))
+        LogoTitle(id: u.id, text: u.name)
         Spacer()
         if let plan = u.plan {
           Text(plan.uppercased())
@@ -450,7 +802,7 @@ struct Card: View {
           Text("\(Int(pct.rounded()))%").font(.system(size: 13, weight: .semibold)).foregroundColor(lv ?? C.text)
         }
         .padding(.top, i == 0 ? 9 : 8)
-        Bar(pct: w.usedPct, color: lv ?? C.muted).padding(.top, 5)
+        Meter(used: w.usedPct, display: display, color: lv ?? C.muted, delay: 0.12 + 0.07 * Double(index)).padding(.top, 5)
       }
       ForEach(Array(u.extras.enumerated()), id: \.offset) { i, x in
         HStack {
@@ -465,6 +817,8 @@ struct Card: View {
     .padding(EdgeInsets(top: 9, leading: 11, bottom: 10, trailing: 11))
     .background(RoundedRectangle(cornerRadius: 8).fill(C.card))
     .overlay(RoundedRectangle(cornerRadius: 8).stroke(C.cardBorder, lineWidth: 1))
+    .modifier(Lift(radius: 8))
+    .modifier(Intro(index: index))
   }
 }
 
@@ -525,13 +879,16 @@ struct Ring: View {
   let u: ProviderUsage
   let display: String
   var size: CGFloat = 42
+  var t: CGFloat = 4
+  /** The strip puts the provider's mark in the middle, in this color. */
+  var mark: Color? = nil
   // Arcs grow from zero when the ring first appears, then follow new values.
   @StateObject private var appeared = LocalState(false)
 
   var body: some View {
     let s = slots(u)
-    let t: CGFloat = 4
     let inner = size - 2 * (t + 3)
+    let hot = [s.short, s.long].contains { ($0?.usedPct ?? 0) >= 80 }
     let both = s.short != nil && s.long != nil
     ZStack {
       Circle().stroke(C.track, lineWidth: t).frame(width: size - t, height: size - t)
@@ -542,9 +899,12 @@ struct Ring: View {
       }
       if s.short == nil && s.long == nil {
         Text("!").font(.system(size: 13, weight: .semibold)).foregroundColor(C.warn)
+      } else if let mark = mark {
+        Logo(id: u.id, color: mark, size: (size * 0.4).rounded())
       }
     }
     .frame(width: size, height: size)
+    .modifier(Glow(on: hot, color: C.error, radius: 7))
     .onAppear { withAnimation(.easeOut(duration: 0.55)) { appeared.value = true } }
   }
 
@@ -615,6 +975,51 @@ struct AccountRow: View {
   }
 }
 
+/** Compact with bars: one short line per account, its name and a meter per limit. */
+struct AccountMeterRow: View {
+  let u: ProviderUsage
+  let display: String
+  let accent: Color
+  let index: Int
+  @StateObject private var hover = LocalState(false)
+
+  var title: String {
+    let short = shortAccount(u)
+    if !short.isEmpty { return short }
+    // No account to name (an API key): the balance says more than the plan already in the header.
+    if let bal = u.extras.first(where: { $0.label.contains("Balance") }), !u.windows.isEmpty { return "\(bal.value) balance" }
+    return baseName(u)
+  }
+
+  var body: some View {
+    let s = slots(u)
+    let ws = [s.short, s.long].compactMap { $0 }
+    HStack(spacing: 8) {
+      Text(title).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
+      Spacer(minLength: 0)
+      HStack(spacing: 6) {
+        if !ws.isEmpty {
+          ForEach(Array(ws.enumerated()), id: \.offset) { _, w in
+            MeterLine(w: w, display: display, accent: accent, length: ws.count == 1 ? 112 : 36, index: index)
+          }
+        } else if let x = u.extras.first {
+          Text(x.label.lowercased()).font(.system(size: 11)).foregroundColor(C.muted)
+          Text(x.value).font(.system(size: 12, weight: .semibold))
+        } else {
+          Text(u.error ?? "no data").font(.system(size: 11)).foregroundColor(C.muted).lineLimit(1)
+        }
+      }
+      .opacity(u.error != nil && !ws.isEmpty ? 0.55 : 1)
+    }
+    .padding(EdgeInsets(top: 3, leading: 6, bottom: 3, trailing: 6))
+    .background(RoundedRectangle(cornerRadius: 6).fill(hover.value ? C.hover : Color.clear))
+    .animation(.easeOut(duration: 0.16), value: hover.value)
+    .onHover { hover.value = $0 }
+    .help(tipText(u, display))
+    .padding(.horizontal, -6)
+  }
+}
+
 struct ProviderGroup: Identifiable {
   let id: String
   let accounts: [ProviderUsage]
@@ -634,26 +1039,168 @@ func groups(_ data: [ProviderUsage]) -> [ProviderGroup] {
 struct CompactCard: View {
   let g: ProviderGroup
   let display: String
+  var gauge = "ring"
+  var index = 0
 
   var body: some View {
     let first = g.accounts[0]
-    let name = first.name.replacingOccurrences(of: " \\(.*\\)$", with: "", options: .regularExpression)
+    let name = baseName(first)
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        (Text("\(icons[g.id] ?? "")  ").foregroundColor(accents[g.id] ?? C.muted) + Text(name))
-          .font(.system(size: 13.5, weight: .semibold))
+        LogoTitle(id: g.id, text: name)
         Spacer()
         Text(g.accounts.count > 1 ? "\(g.accounts.count) accounts" : (first.plan?.uppercased() ?? ""))
           .font(.system(size: 10.5, weight: .semibold)).foregroundColor(C.muted)
       }
       VStack(alignment: .leading, spacing: 0) {
-        ForEach(g.accounts, id: \.uid) { AccountRow(u: $0, display: display) }
+        ForEach(g.accounts, id: \.uid) { u in
+          if gauge == "bar" {
+            AccountMeterRow(u: u, display: display, accent: accents[g.id] ?? C.text, index: index)
+          } else {
+            AccountRow(u: u, display: display)
+          }
+        }
       }
-      .padding(.top, 6)
+      .padding(.top, gauge == "bar" ? 4 : 6)
     }
-    .padding(EdgeInsets(top: 10, leading: 12, bottom: 6, trailing: 12))
+    .padding(EdgeInsets(top: gauge == "bar" ? 8 : 10, leading: 12, bottom: 6, trailing: 12))
     .background(RoundedRectangle(cornerRadius: 10).fill(C.card))
     .overlay(RoundedRectangle(cornerRadius: 10).stroke(C.cardBorder, lineWidth: 1))
+    .modifier(Lift(radius: 10))
+    .modifier(Intro(index: index))
+  }
+}
+
+// ---- strip ---------------------------------------------------------------------------
+
+/** One account in the strip: a ring pair around the mark (or the mark and a meter per limit) and its numbers. */
+struct StripChip: View {
+  let u: ProviderUsage
+  let display: String
+  let gauge: String
+  let index: Int
+  @StateObject private var hover = LocalState(false)
+
+  var body: some View {
+    let s = slots(u)
+    let ws = [s.short, s.long].compactMap { $0 }
+    let accent = accents[u.id] ?? C.text
+    HStack(spacing: 7) {
+      if gauge == "bar" {
+        Logo(id: u.id, color: accent, size: 14)
+          .frame(width: 26, height: 26)
+          .background(Circle().fill(C.card))
+        meters(ws, accent)
+      } else {
+        Ring(u: u, display: display, size: 32, t: 3, mark: accent)
+        numbers(s)
+      }
+    }
+    .padding(EdgeInsets(top: 3, leading: 3, bottom: 3, trailing: gauge == "bar" ? 6 : 10))
+    .background(RoundedRectangle(cornerRadius: 17).fill(hover.value ? C.hover : Color.clear))
+    .scaleEffect(hover.value ? 1.06 : 1)
+    .animation(.spring(response: 0.25, dampingFraction: 0.55), value: hover.value)
+    .onHover { hover.value = $0 }
+    .help(tipText(u, display))
+    // Numbers kept from a failed refresh fade back a little.
+    .opacity(u.error != nil && !ws.isEmpty ? 0.55 : 1)
+    .modifier(Intro(index: index))
+  }
+
+  func who(_ ws: [UsageWindow]) -> String {
+    let a = shortAccount(u)
+    if !a.isEmpty { return a }
+    if let x = u.extras.first { return "\(x.value) \(x.label.lowercased())" }
+    return ""
+  }
+
+  @ViewBuilder func meters(_ ws: [UsageWindow], _ accent: Color) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if !ws.isEmpty {
+        ForEach(Array(ws.enumerated()), id: \.offset) { _, w in
+          MeterLine(w: w, display: display, accent: accent, length: 46, index: index)
+        }
+        if ws.count == 1 && !who(ws).isEmpty {
+          Text(who(ws)).font(.system(size: 10)).foregroundColor(C.muted)
+        }
+      } else if let x = u.extras.first {
+        Text(x.value).font(.system(size: 12.5, weight: .semibold))
+        Text(x.label.lowercased()).font(.system(size: 10)).foregroundColor(C.muted)
+      } else {
+        Text(baseName(u)).font(.system(size: 12, weight: .semibold))
+        Text(u.error != nil ? "error" : "no data").font(.system(size: 10)).foregroundColor(u.error != nil ? C.warn : C.muted)
+      }
+    }
+  }
+
+  @ViewBuilder func numbers(_ s: Slots) -> some View {
+    let main = s.short ?? s.long
+    let other = s.short != nil ? s.long : nil
+    VStack(alignment: .leading, spacing: 0) {
+      if let main = main {
+        (Text("\(Int(shown(main, display).rounded()))%").font(.system(size: 13, weight: .semibold))
+          .foregroundColor(level(main.usedPct) ?? C.text)
+          + Text(" \(slotName(main))").font(.system(size: 10)).foregroundColor(C.muted))
+        if let other = other {
+          Text("\(slotName(other)) \(Int(shown(other, display).rounded()))%").font(.system(size: 10))
+            .foregroundColor(level(other.usedPct) ?? C.muted)
+        } else if !shortAccount(u).isEmpty {
+          Text(shortAccount(u)).font(.system(size: 10)).foregroundColor(C.muted)
+        }
+      } else if let x = u.extras.first {
+        Text(x.value).font(.system(size: 13, weight: .semibold))
+        Text(x.label.lowercased()).font(.system(size: 10)).foregroundColor(C.muted)
+      } else {
+        Text(baseName(u)).font(.system(size: 12, weight: .semibold))
+        Text("no data").font(.system(size: 10)).foregroundColor(C.muted)
+      }
+    }
+  }
+}
+
+/** The strip: a slim pill, a chip per account; its buttons stay faint until the pointer comes over it. */
+struct StripView: View {
+  @ObservedObject var m: Model
+  let settings: () -> Void
+  @StateObject private var hover = LocalState(false)
+
+  var body: some View {
+    let shown = m.shown
+    HStack(spacing: 2) {
+      Text("\u{25F7}").font(.system(size: 14)).foregroundColor(C.muted).frame(width: 26, height: 38)
+        .help(m.lastError.isEmpty ? "OpenUsage - \(formatAgo(m.updatedAt))" : "OpenUsage - \(m.lastError)")
+      ForEach(Array(shown.enumerated()), id: \.element.uid) { i, u in
+        // A hairline between providers; accounts of the same provider sit together.
+        if i > 0 && shown[i - 1].id != u.id {
+          Rectangle().fill(C.divider).frame(width: 1, height: 20).padding(.horizontal, 3)
+        }
+        StripChip(u: u, display: m.display, gauge: m.gauge, index: i)
+      }
+      if shown.isEmpty {
+        Text(m.refreshing ? "Loading..." : "No data").font(.system(size: 12)).foregroundColor(C.muted)
+          .padding(.leading, 4).padding(.trailing, 8)
+      }
+      HStack(spacing: 0) {
+        HeaderButton(title: "\u{27F3}", help: "Refresh", spinning: m.refreshing) { m.refresh() }
+        HeaderButton(title: "\u{2699}", help: "Settings", action: settings)
+          .overlay(alignment: .topTrailing) {
+            if m.update.behind > 0 { Circle().fill(C.warn).frame(width: 6, height: 6).offset(x: -2, y: 1) }
+          }
+      }
+      .padding(.leading, 2)
+      .opacity(hover.value ? 1 : 0.35)
+      .animation(.easeOut(duration: 0.25), value: hover.value)
+    }
+    .font(.system(size: 13))
+    .foregroundColor(C.text)
+    .padding(EdgeInsets(top: 4, leading: 5, bottom: 4, trailing: 5))
+    .background(DragArea())
+    .background(RoundedRectangle(cornerRadius: 23).fill(C.bg))
+    .overlay(RoundedRectangle(cornerRadius: 23).stroke(C.border, lineWidth: 1))
+    .overlay(Group { if m.refreshing { Shimmer(radius: 23, diagonal: false).transition(.opacity) } })
+    .animation(.easeOut(duration: 0.3), value: m.refreshing)
+    .onHover { hover.value = $0 }
+    .fixedSize()
   }
 }
 
@@ -669,13 +1216,14 @@ struct Segmented: View {
   let options: [SegOption]
   let value: String
   let pick: (String) -> Void
+  @Namespace private var ns
 
   var body: some View {
     HStack(spacing: 0) {
       ForEach(options, id: \.value) { o in
         let on = o.value == value
         Button {
-          pick(o.value)
+          withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { pick(o.value) }
         } label: {
           Text(o.label)
             .font(.system(size: 12.5, weight: on ? .semibold : .regular))
@@ -683,7 +1231,10 @@ struct Segmented: View {
             .frame(minWidth: 62)
             .padding(.vertical, 4)
             .padding(.horizontal, 8)
-            .background(RoundedRectangle(cornerRadius: 6).fill(on ? C.text : Color.clear))
+            .background(
+              Group {
+                if on { RoundedRectangle(cornerRadius: 6).fill(C.text).matchedGeometryEffect(id: "pick", in: ns) }
+              })
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -722,6 +1273,8 @@ struct SettingsView: View {
   @ObservedObject var m: Model
   let close: () -> Void
   let askKey: (String) -> Void
+  // Opening: the panel pops in and its rows arrive one after the other.
+  @StateObject private var appeared = LocalState(false)
 
   var body: some View {
     let u = m.update
@@ -741,28 +1294,41 @@ struct SettingsView: View {
       }
       .padding(.bottom, 12)
       .background(DragArea())
-      caption("DISPLAY")
+      caption("DISPLAY").modifier(Intro(index: 1, step: 0.03))
       option("Numbers", "Default for every limit") {
         Segmented(
           options: [SegOption(value: "used", label: "Used"), SegOption(value: "remaining", label: "Left")],
           value: m.display, pick: { m.setDisplay($0) })
       }
-      option("Layout", "Compact: a line per account") {
+      .modifier(Intro(index: 2, step: 0.03))
+      option("Layout", layoutNote) {
         Segmented(
-          options: [SegOption(value: "normal", label: "Normal"), SegOption(value: "compact", label: "Compact")],
+          options: [
+            SegOption(value: "normal", label: "Normal"), SegOption(value: "compact", label: "Compact"),
+            SegOption(value: "bar", label: "Strip"),
+          ],
           value: m.layout, pick: { m.setLayout($0) })
       }
       .padding(.top, 8)
+      .modifier(Intro(index: 3, step: 0.03))
+      option("Gauges", gaugeNote) {
+        Segmented(
+          options: [SegOption(value: "ring", label: "Rings"), SegOption(value: "bar", label: "Bars")],
+          value: m.gauge, pick: { m.setGauge($0) })
+      }
+      .padding(.top, 8)
+      .modifier(Intro(index: 4, step: 0.03))
       Rectangle().fill(C.divider).frame(height: 1).padding(.top, 16).padding(.bottom, 14)
-      caption("API KEYS")
+      caption("API KEYS").modifier(Intro(index: 5, step: 0.03))
       Text("Found by itself when OpenCode, Kilo, Crush or Claude Code already use one; otherwise add it here.")
         .font(.system(size: 11.5)).foregroundColor(C.muted).fixedSize(horizontal: false, vertical: true)
         .padding(.bottom, 10)
-      ForEach(keyedProviders, id: \.self) { pid in
+        .modifier(Intro(index: 6, step: 0.03))
+      ForEach(Array(keyedProviders.enumerated()), id: \.element) { i, pid in
         let k = m.keys[pid]
         HStack(spacing: 6) {
           VStack(alignment: .leading, spacing: 1) {
-            Text("\(icons[pid] ?? "")  ").foregroundColor(accents[pid] ?? C.muted) + Text(k?.name ?? pid)
+            LogoTitle(id: pid, text: k?.name ?? pid, size: 13, weight: .regular)
             Text(keyStatus(k)).font(.system(size: 11)).foregroundColor(C.muted)
           }
           Spacer()
@@ -772,9 +1338,10 @@ struct SettingsView: View {
           DialogButton(title: k?.source != nil ? "Change" : "Add key", enabled: k != nil) { askKey(pid) }
         }
         .padding(.bottom, 10)
+        .modifier(Intro(index: 7 + i, step: 0.03))
       }
       Rectangle().fill(C.divider).frame(height: 1).padding(.top, 4).padding(.bottom, 14)
-      caption("ABOUT")
+      caption("ABOUT").modifier(Intro(index: 10, step: 0.03))
       HStack(spacing: 12) {
         Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 40, height: 40)
         VStack(alignment: .leading, spacing: 1) {
@@ -809,6 +1376,17 @@ struct SettingsView: View {
     .fixedSize(horizontal: false, vertical: true)
     .background(RoundedRectangle(cornerRadius: 12).fill(C.bg))
     .overlay(RoundedRectangle(cornerRadius: 12).stroke(C.border, lineWidth: 1))
+    .scaleEffect(appeared.value ? 1 : 0.94, anchor: .top)
+    .opacity(appeared.value ? 1 : 0)
+    .onAppear { withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) { appeared.value = true } }
+  }
+
+  var layoutNote: String {
+    m.layout == "bar" ? "One slim strip" : m.layout == "compact" ? "A line per account" : "A card per account"
+  }
+
+  var gaugeNote: String {
+    m.layout == "normal" ? "For Compact and Strip" : m.gauge == "bar" ? "Slim meters" : "Rings around the numbers"
   }
 
   func caption(_ s: String) -> some View {
@@ -837,6 +1415,14 @@ struct WidgetView: View {
   private let clock = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
   var body: some View {
+    if m.layout == "bar" {
+      StripView(m: m, settings: settings)
+    } else {
+      panel
+    }
+  }
+
+  var panel: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 2) {
         (Text("\u{25F7}").foregroundColor(C.muted) + Text(" OpenUsage")).font(.system(size: 13, weight: .semibold))
@@ -848,7 +1434,7 @@ struct WidgetView: View {
           }
         HeaderButton(title: "+", help: "Add account", action: add)
         HeaderButton(title: m.display == "used" ? "Used" : "Left", help: "Used / left") { m.toggleDisplay() }
-        HeaderButton(title: "\u{27F3}", help: "Refresh") { m.refresh() }
+        HeaderButton(title: "\u{27F3}", help: "Refresh", spinning: m.refreshing) { m.refresh() }
         HeaderButton(title: "\u{2715}", help: "Hide (menu bar icon brings it back)", action: hide)
       }
       .padding(.bottom, 8)
@@ -859,9 +1445,11 @@ struct WidgetView: View {
       }
       VStack(spacing: 8) {
         if m.layout == "compact" {
-          ForEach(groups(m.shown)) { CompactCard(g: $0, display: m.display) }
+          ForEach(Array(groups(m.shown).enumerated()), id: \.element.id) { i, g in
+            CompactCard(g: g, display: m.display, gauge: m.gauge, index: i)
+          }
         } else {
-          ForEach(m.shown, id: \.uid) { Card(u: $0, display: m.display) }
+          ForEach(Array(m.shown.enumerated()), id: \.element.uid) { i, u in Card(u: u, display: m.display, index: i) }
         }
       }
       Rectangle().fill(C.divider).frame(height: 1).padding(.top, 10).padding(.bottom, 6)
@@ -880,6 +1468,8 @@ struct WidgetView: View {
     .fixedSize(horizontal: false, vertical: true)
     .background(RoundedRectangle(cornerRadius: 12).fill(C.bg))
     .overlay(RoundedRectangle(cornerRadius: 12).stroke(C.border, lineWidth: 1))
+    .overlay(Group { if m.refreshing { Shimmer(radius: 12).transition(.opacity) } })
+    .animation(.easeOut(duration: 0.3), value: m.refreshing)
     .onReceive(clock) { now.value = $0 }
   }
 }
@@ -1007,7 +1597,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     panel.level = topmost ? .floating : .normal
 
     let area = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-    if let x = defaults.object(forKey: "x") as? Double, let top = defaults.object(forKey: "top") as? Double {
+    if let right = defaults.object(forKey: "right") as? Double, let top = defaults.object(forKey: "top") as? Double {
+      panel.setFrameTopLeftPoint(NSPoint(x: right - host.fittingSize.width, y: top))
+    } else if let x = defaults.object(forKey: "x") as? Double, let top = defaults.object(forKey: "top") as? Double {
       panel.setFrameTopLeftPoint(NSPoint(x: x, y: top))
     } else {
       panel.setFrameTopLeftPoint(NSPoint(x: area.maxX - 330, y: area.maxY - 16))
@@ -1017,17 +1609,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       guard let f = self?.panel.frame else { return }
       defaults.set(Double(f.minX), forKey: "x")
       defaults.set(Double(f.maxY), forKey: "top")
+      // On the right half of the screen the right edge is what stays put, also across restarts.
+      let area = self?.panel.screen?.visibleFrame ?? f
+      if f.midX > area.midX { defaults.set(Double(f.maxX), forKey: "right") } else { defaults.removeObject(forKey: "right") }
     }
 
-    // Grow or shrink with the content, keeping the top edge where the user put it.
+    // Grow or shrink with the content, keeping the top edge where the user put it, and the right edge
+    // on the right half of the screen (the strip then grows leftward).
     model.objectWillChange.sink { [weak self] _ in
       DispatchQueue.main.async {
         guard let self else { return }
         let size = host.fittingSize
-        let top = self.panel.frame.maxY
-        self.panel.setFrame(
-          NSRect(x: self.panel.frame.minX, y: top - size.height, width: size.width, height: size.height),
-          display: true)
+        let f = self.panel.frame
+        let area = self.panel.screen?.visibleFrame ?? f
+        let x = f.midX > area.midX ? f.maxX - size.width : f.minX
+        self.panel.setFrame(NSRect(x: x, y: f.maxY - size.height, width: size.width, height: size.height), display: true)
         self.status.button?.toolTip = self.model.trayText
       }
     }.store(in: &bag)
@@ -1048,7 +1644,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
       self?.model.runUpdate("check")
     }
 
-    panel.orderFrontRegardless()
+    panel.alphaValue = 0
+    showWindow()
     model.refresh()
     model.runUpdate("check")
   }
@@ -1084,12 +1681,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     loginItem.state = FileManager.default.fileExists(atPath: agentURL.path) ? .on : .off
   }
 
+  var hiding = false
+
+  /** Opening: the widget fades in while settling the last few points into place. */
   func showWindow() {
+    hiding = false
+    if panel.isVisible && panel.alphaValue == 1 {
+      panel.orderFrontRegardless()
+      return
+    }
+    let f = panel.frame
+    panel.alphaValue = 0
+    panel.setFrameOrigin(NSPoint(x: f.minX, y: f.minY - 8))
     panel.orderFrontRegardless()
+    NSAnimationContext.runAnimationGroup { ctx in
+      ctx.duration = 0.24
+      ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+      panel.animator().alphaValue = 1
+      panel.animator().setFrame(f, display: true)
+    }
+  }
+
+  /** Closing: a quick fade, then hidden. */
+  func hideWindow() {
+    if hiding { return }
+    hiding = true
+    NSAnimationContext.runAnimationGroup({ ctx in
+      ctx.duration = 0.16
+      ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+      panel.animator().alphaValue = 0
+    }, completionHandler: { [weak self] in
+      guard let self, self.hiding else { return }
+      self.hiding = false
+      self.panel.orderOut(nil)
+      self.panel.alphaValue = 1
+    })
   }
 
   @objc func toggleWindow() {
-    if panel.isVisible { panel.orderOut(nil) } else { showWindow() }
+    if panel.isVisible && !hiding { hideWindow() } else { showWindow() }
   }
 
   @objc func refresh() { model.refresh() }

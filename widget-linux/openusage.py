@@ -27,6 +27,11 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk, Pango, PangoCairo  # noqa: E402
+# Gradients (pycairo, python3-gi-cairo on Debian/Ubuntu): without it bars are a flat color and there's no sweep.
+try:
+    import cairo  # noqa: E402
+except ImportError:
+    cairo = None
 
 # Tray: an AppIndicator when its typelib is installed, else the legacy X11 tray icon.
 Indicator = None
@@ -44,6 +49,8 @@ REFRESH_MINUTES = 5
 APP_ID = "com.openusage.widget"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(ROOT, "docs", "icon.png")
+# The providers' own marks, one path each; the glyphs below stand in for any without one.
+LOGO_DIR = os.path.join(ROOT, "assets", "providers")
 ICONS = {
     "claude": "✻",
     "codex": "◎",
@@ -250,16 +257,23 @@ window.ou, window.ou decoration { background: transparent; box-shadow: none; bor
 .divider { background-color: @divider; min-height: 1px; }
 .card { background-color: @card; border: 1px solid @cardBorder; border-radius: 8px; }
 .ccard { background-color: @card; border: 1px solid @cardBorder; border-radius: 10px; }
-.row { border-radius: 8px; }
+.row { border-radius: 8px; transition: background-color 160ms ease-out; }
 .row.hover { background-color: @hover; }
+.frame.strip { border-radius: 23px; }
+.chip { border-radius: 17px; }
+.mark { background-color: @card; border-radius: 13px; }
+.card, .ccard { transition: border-color 200ms ease-out; }
+.card.hover, .ccard.hover { border-color: @border; }
 .badge { background-color: @track; border-radius: 4px; padding: 1px 6px; }
 button.hbtn { all: unset; color: @muted; padding: 2px 6px; border-radius: 5px; }
 button.hbtn:hover { background-color: @hover; color: @text; }
 .seg { background-color: @card; border: 1px solid @cardBorder; border-radius: 8px; padding: 3px; }
-button.segbtn { all: unset; padding: 4px 8px; min-width: 62px; border-radius: 6px; color: @muted; }
+button.segbtn { all: unset; padding: 4px 8px; min-width: 62px; border-radius: 6px; color: @muted;
+  transition: background-color 200ms ease-out, color 200ms ease-out; }
 button.segbtn.on { background-color: @text; color: @bg; font-weight: 600; }
 button.dbtn { all: unset; padding: 6px 14px; border-radius: 7px; background-color: @card;
-  border: 1px solid @cardBorder; color: @text; }
+  border: 1px solid @cardBorder; color: @text; transition: opacity 150ms ease-out; }
+button.dbtn:hover { opacity: 0.85; }
 button.dbtn.primary { background-color: @text; border-color: @text; color: @bg; font-weight: 600; }
 button.dbtn:disabled { opacity: 0.4; }
 .status { background-color: @card; border: 1px solid @cardBorder; border-radius: 8px; }
@@ -417,6 +431,102 @@ def groups(data):
     return [(i, by_id[i]) for i in order]
 
 
+# ---- logos and motion ----------------------------------------------------------------------
+
+_logo_paths = {}
+_logo_cache = {}
+UI_SCALE = [1]
+
+
+def logo_paths(pid):
+    """(viewBox, [path data]) of a provider's mark, or None."""
+    name = "opencode" if pid == "opencode-go" else pid
+    if name not in _logo_paths:
+        try:
+            with open(os.path.join(LOGO_DIR, name + ".svg"), encoding="utf-8") as f:
+                svg = f.read()
+            vb = re.search(r'viewBox="([^"]+)"', svg)
+            ds = re.findall(r'\sd="([^"]+)"', svg)
+            _logo_paths[name] = (vb.group(1), ds) if vb and ds else None
+        except OSError:
+            _logo_paths[name] = None
+    return _logo_paths[name]
+
+
+def logo_surface(pid, color, size):
+    """The mark in one color as a cairo surface of `size` logical pixels (sharp on HiDPI), via librsvg; None without it."""
+    scale = UI_SCALE[0]
+    key = (pid, color, size, scale)
+    if key not in _logo_cache:
+        surf = None
+        src = logo_paths(pid)
+        if src:
+            px = int(round(size * scale))
+            paths = "".join(f'<path fill="{color}" d="{d}"/>' for d in src[1])
+            svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{px}" height="{px}" viewBox="{src[0]}">{paths}</svg>'
+            try:
+                loader = GdkPixbuf.PixbufLoader.new_with_type("svg")
+                loader.write(svg.encode())
+                loader.close()
+                surf = Gdk.cairo_surface_create_from_pixbuf(loader.get_pixbuf(), scale, None)
+            except GLib.Error:
+                surf = None
+        _logo_cache[key] = surf
+    return _logo_cache[key]
+
+
+def logo(pid, color, size=13):
+    """The provider's mark, or its glyph when there is none (or no SVG loader)."""
+    surf = logo_surface(pid, color, size)
+    if surf is None:
+        lb = label(span(ICONS.get(pid, ""), size, color, "bold"))
+        lb.set_valign(Gtk.Align.CENTER)
+        return lb
+    img = Gtk.Image.new_from_surface(surf)
+    img.set_valign(Gtk.Align.CENTER)
+    return img
+
+
+def logo_title(pid, text, size=13.5, color=None, weight="bold"):
+    """Mark + name, for card headers and settings rows."""
+    row = hbox(7, logo(pid, color or C.get(pid, C["text"]), size + 0.5))
+    row.pack_start(label(span(text, size, weight=weight)), False, False, 0)
+    return row
+
+
+def ease_out(k, power=3):
+    return 1 - (1 - k) ** power
+
+
+def animate(widget, ms, step, delay=0):
+    """Calls step(eased 0..1) on every frame for `ms`, after `delay`; stops when the widget goes away."""
+    def start():
+        t0 = time.monotonic()
+
+        def tick(*_):
+            k = min(1, (time.monotonic() - t0) * 1000 / ms)
+            step(k)
+            return k < 1
+        # Ticks start once the widget is on screen.
+        widget.add_tick_callback(lambda w, clock: tick())
+        return False
+    if delay:
+        GLib.timeout_add(delay, start)
+    else:
+        start()
+
+
+def fade_in(widget, index, step=70, target=1.0):
+    """First show of a layout or dialog: blocks fade in one after the other. (Moving them would resize the window.)"""
+    widget.set_opacity(0)
+    animate(widget, 420, lambda k: widget.set_opacity(target * ease_out(k)), delay=step * index)
+
+
+def pulse(t, period=2.2):
+    """0..1..0 breathing, for the glow of a limit at 80% or more."""
+    return 0.5 - 0.5 * math.cos(2 * math.pi * t / period)
+
+
 # ---- model -----------------------------------------------------------------------------
 
 
@@ -428,7 +538,11 @@ class Model:
         self.refreshing = False
         self.last_error = ""
         self.display = "remaining" if settings.get("display") == "remaining" else "used"
-        self.layout = "compact" if settings.get("layout") == "compact" else "normal"
+        self.layout = settings.get("layout") if settings.get("layout") in ("compact", "bar") else "normal"
+        # How compact and strip draw a limit: "ring" or "bar" (a slim meter).
+        self.gauge = "bar" if settings.get("gauge") == "bar" else "ring"
+        # Set when the layout changes: the next build plays the intro.
+        self.intro = True
         self.update = {"busy": "", "version": "", "commit": "", "behind": 0, "error": "", "checked": False}
         self.proc = None
         self.update_proc = None
@@ -451,7 +565,14 @@ class Model:
 
     def set_layout(self, v):
         self.layout = v
+        self.intro = True
         save_setting("layout", v)
+        self.changed()
+
+    def set_gauge(self, v):
+        self.gauge = v
+        self.intro = True
+        save_setting("gauge", v)
         self.changed()
 
     def run_script(self, name, args, timeout, done, env=None):
@@ -590,7 +711,7 @@ class Model:
         In compact mode a provider with no account at all (never signed in, no key, nothing to show) gets no card;
         the normal layout keeps it, with the hint on how to sign in.
         """
-        if self.layout != "compact":
+        if self.layout == "normal":
             return self.data
         return [
             u
@@ -608,29 +729,73 @@ class Model:
 # ---- drawing -----------------------------------------------------------------------------
 
 
-class Bar(Gtk.DrawingArea):
-    def __init__(self, pct, color):
+# Where each meter was last drawn, so a rebuilt one moves from there.
+meter_state = {}
+
+
+class Meter(Gtk.DrawingArea):
+    """A rounded track whose fill slides to its value in a gradient of its color, and breathes a glow from 80%."""
+
+    def __init__(self, used, color, key=None, width=-1, height=4, delay=0, intro=False, display="used"):
         super().__init__()
-        self.pct, self.color = pct, color
-        self.set_size_request(-1, 4)
+        self.used, self.color, self.h = used, color, height
+        self.hot = used >= 80
+        pad = 3 if self.hot else 0
+        self.pad = pad
+        self.set_size_request(width, height + 2 * pad)
+        self.set_valign(Gtk.Align.CENTER)
+        shown = used if display == "used" else 100 - used
+        target = (100 if used >= 100 else max(0, min(100, shown))) / 100
+        self.start = 0 if intro or key is None else meter_state.get(key, 0)
+        if key is not None:
+            meter_state[key] = target
+        self.target = target
+        self.value = self.start
+        self.t0 = time.monotonic()
         self.connect("draw", self.draw)
+        if self.start != target:
+            self.value = self.start
+            animate(self, 750, self.step, delay=delay)
+        if self.hot:
+            self.add_tick_callback(lambda w, clock: (w.queue_draw(), True)[1])
+
+    def step(self, k):
+        self.value = self.start + (self.target - self.start) * ease_out(k, 4)
+        self.queue_draw()
+
+    def capsule(self, cr, x, y, width, h):
+        r = h / 2
+        cr.new_sub_path()
+        cr.arc(x + r, y + r, r, math.pi / 2, 3 * math.pi / 2)
+        cr.arc(x + max(r, width - r), y + r, r, -math.pi / 2, math.pi / 2)
+        cr.close_path()
 
     def draw(self, _w, cr):
-        w, h = self.get_allocated_width(), self.get_allocated_height()
-
-        def capsule(width, color):
-            if width <= 0:
-                return
-            r = h / 2
-            cr.set_source_rgb(*rgb(color))
-            cr.new_sub_path()
-            cr.arc(r, r, r, math.pi / 2, 3 * math.pi / 2)
-            cr.arc(max(r, width - r), r, r, -math.pi / 2, math.pi / 2)
-            cr.close_path()
-            cr.fill()
-
-        capsule(w, C["track"])
-        capsule(w * max(0, min(100, self.pct)) / 100, self.color)
+        w = self.get_allocated_width() - 2 * self.pad
+        h, x, y = self.h, self.pad, self.pad
+        cr.set_source_rgb(*rgb(C["track"]))
+        self.capsule(cr, x, y, w, h)
+        cr.fill()
+        fw = w * self.value
+        if fw <= 0:
+            return
+        fw = max(h, fw)
+        r, g, b = rgb(self.color)
+        if self.hot:
+            a = 0.12 + 0.3 * pulse(time.monotonic() - self.t0)
+            for grow in (3, 1.5):
+                cr.set_source_rgba(r, g, b, a / 2)
+                self.capsule(cr, x - grow, y - grow, fw + 2 * grow, h + 2 * grow)
+                cr.fill()
+        if cairo is None:
+            cr.set_source_rgb(r, g, b)
+        else:
+            grad = cairo.LinearGradient(x, 0, x + fw, 0)
+            grad.add_color_stop_rgba(0, r, g, b, 0.55)
+            grad.add_color_stop_rgba(1, r, g, b, 1)
+            cr.set_source(grad)
+        self.capsule(cr, x, y, fw, h)
+        cr.fill()
 
 
 # Where each ring was last drawn, so a rebuilt ring moves from there to its new value.
@@ -640,12 +805,13 @@ ring_state = {}
 class Ring(Gtk.DrawingArea):
     """Outer arc = weekly (or the billing cycle), inner arc = 5 hours. The numbers sit beside it, not inside."""
 
-    SIZE = 42
-    T = 4
-
-    def __init__(self, u, display):
+    def __init__(self, u, display, size=42, t=4, mark=None):
         super().__init__()
-        self.set_size_request(self.SIZE, self.SIZE)
+        self.SIZE, self.T = size, t
+        # The strip puts the provider's mark in the middle.
+        self.mark = logo_surface(u["id"], mark, round(size * 0.4)) if mark else None
+        self.glyph = (ICONS.get(u["id"], ""), mark) if mark and self.mark is None else None
+        self.set_size_request(size + 8, size + 8)
         self.set_valign(Gtk.Align.CENTER)
         self.key = uid(u)
         self.short, self.long = slots(u)
@@ -655,7 +821,11 @@ class Ring(Gtk.DrawingArea):
         self.start = ring_state.get(self.key, (0, 0))
         self.progress = self.start
         ring_state[self.key] = self.target
+        self.hot = any(w is not None and w["usedPct"] >= 80 for w in (self.short, self.long))
+        self.born = time.monotonic()
         self.connect("draw", self.draw)
+        if self.hot:
+            self.add_tick_callback(lambda w, clock: (w.queue_draw(), True)[1])
         if self.start != self.target:
             self.t0 = time.monotonic()
             GLib.timeout_add(16, self.tick)
@@ -670,7 +840,17 @@ class Ring(Gtk.DrawingArea):
     def draw(self, _w, cr):
         s, t = self.SIZE, self.T
         c = s / 2
+        cr.translate(4, 4)
         both = self.short is not None and self.long is not None
+        if self.hot:
+            # A soft halo that breathes, in the warning color.
+            r, g, b = rgb(C["error"])
+            a = 0.1 + 0.3 * pulse(time.monotonic() - self.born)
+            for width in (t + 7, t + 3):
+                cr.set_source_rgba(r, g, b, a / 2)
+                cr.set_line_width(width)
+                cr.arc(c, c, (s - t) / 2, 0, 2 * math.pi)
+                cr.stroke()
         inner = s - 2 * (t + 3)
         cr.set_line_width(t)
 
@@ -696,6 +876,16 @@ class Ring(Gtk.DrawingArea):
             arc(s, self.progress[0], level(self.long["usedPct"]) or C["muted"])
         if self.short is not None:
             arc(inner if both else s, self.progress[1], level(self.short["usedPct"]) or C["text"])
+        if self.mark is not None and (self.short is not None or self.long is not None):
+            ms = round(s * 0.4)
+            cr.set_source_surface(self.mark, c - ms / 2, c - ms / 2)
+            cr.paint()
+        elif self.glyph and (self.short is not None or self.long is not None):
+            layout = self.create_pango_layout("")
+            layout.set_markup(span(self.glyph[0], 10, self.glyph[1]))
+            lw, lh = layout.get_pixel_size()
+            cr.move_to(c - lw / 2, c - lh / 2)
+            PangoCairo.show_layout(cr, layout)
         if self.short is None and self.long is None:
             layout = self.create_pango_layout("")
             layout.set_markup(span("!", 13, C["warn"], "bold"))
@@ -791,11 +981,25 @@ def hover_box(child, tooltip=None):
     return eb
 
 
-def card(u, display):
+def hover_card(outer):
+    """Cards: the border lights up under the pointer."""
+    eb = Gtk.EventBox()
+    eb.set_visible_window(False)
+    eb.add(outer)
+    eb.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+    eb.connect("enter-notify-event", lambda *_: outer.get_style_context().add_class("hover"))
+    eb.connect(
+        "leave-notify-event",
+        lambda _w, ev: ev.detail != Gdk.NotifyType.INFERIOR and outer.get_style_context().remove_class("hover"),
+    )
+    return eb
+
+
+def card(u, display, index=0, intro=False):
     has_data = bool(u.get("windows") or u.get("extras"))
     box = margins(vbox(), 9, 11, 10, 11)
     top = hbox(0)
-    title = label(span(f"{ICONS.get(u['id'], '')}  ", 13.5, C["muted"], "bold") + span(u["name"], 13.5, weight="bold"))
+    title = logo_title(u["id"], u["name"])
     top.pack_start(title, True, True, 0)
     if u.get("plan"):
         badge = styled(hbox(0, label(span(u["plan"].upper(), 10, C["muted"], "bold"))), "badge")
@@ -818,7 +1022,8 @@ def card(u, display):
         row.pack_start(label(span(w["label"]) + (span(f"  {reset}", 12, C["muted"]) if reset else ""), ellipsize=True), True, True, 0)
         row.pack_end(label(span(f"{round(pct)}%", 13, lv or C["text"], "bold"), xalign=1), False, False, 0)
         box.pack_start(margins(row, top=9 if i == 0 else 8), False, False, 0)
-        box.pack_start(margins(Bar(w["usedPct"], lv or C["muted"]), top=5), False, False, 0)
+        meter = Meter(w["usedPct"], lv or C["muted"], f"{uid(u)}|{w['label']}", delay=120 + 70 * index, intro=intro, display=display)
+        box.pack_start(margins(meter, top=2), False, False, 0)
     for i, x in enumerate(u.get("extras") or []):
         row = hbox(8)
         row.pack_start(label(span(x["label"], 12.5, C["muted"]), ellipsize=True), True, True, 0)
@@ -826,7 +1031,7 @@ def card(u, display):
         box.pack_start(margins(row, top=9 if not u.get("windows") and i == 0 else 8), False, False, 0)
     outer = styled(vbox(), "card")
     outer.pack_start(box, True, True, 0)
-    return outer
+    return hover_card(outer)
 
 
 def account_row(u, display):
@@ -848,9 +1053,9 @@ def account_row(u, display):
             parts.append(f"↻ {format_reset_short(first['resetsAt'])}")
         sub, sub_color = "  ·  ".join(parts), C["muted"]
 
-    row = margins(hbox(0), 5, 8, 5, 6)
+    row = margins(hbox(0), 1, 8, 1, 2)
     row.pack_start(Ring(u, display), False, False, 0)
-    text = margins(vbox(1), left=12, right=10)
+    text = margins(vbox(1), left=8, right=10)
     text.set_valign(Gtk.Align.CENTER)
     if title:
         text.pack_start(label(span(title, 13), ellipsize=True), False, False, 0)
@@ -872,25 +1077,177 @@ def account_row(u, display):
     return hover_box(row, tip_text(u, display))
 
 
-def compact_card(pid, accounts, display):
+def short_slot(w):
+    """A few letters, so meters line up: "Credits" -> "cr", "Daily" -> "day"."""
+    n = slot_name(w)
+    return "cr" if n.startswith("Credit") else "day" if n.startswith("Daily") else n[:3].lower() if len(n) > 3 else n
+
+
+def meter_line(u, w, display, accent, length, index, intro):
+    """5h ▬▬▬▬▭▭ 72%"""
+    lv = level(w["usedPct"])
+    line = hbox(0)
+    name = label(span(short_slot(w), 10, C["muted"]))
+    name.set_size_request(16, -1)
+    line.pack_start(name, False, False, 0)
+    meter = Meter(w["usedPct"], lv or accent, f"{uid(u)}|{w['label']}|m", length, 5, 120 + 70 * index, intro, display)
+    line.pack_start(margins(meter, left=3, right=5), False, False, 0)
+    pct = label(span(f"{round(shown_pct(w, display))}%", 11, lv or C["text"], "bold"))
+    pct.set_size_request(27, -1)
+    line.pack_start(pct, False, False, 0)
+    return line
+
+
+def account_meter_row(u, display, accent, index, intro):
+    """Compact with bars: one short line per account, its name and a meter per limit."""
+    short, long = slots(u)
+    ws = [w for w in (short, long) if w is not None]
+    extras = u.get("extras") or []
+    title = short_account(u)
+    if not title:
+        # No account to name (an API key): the balance says more than the plan already in the header.
+        bal = next((x for x in extras if "Balance" in x["label"]), None)
+        title = f"{bal['value']} balance" if bal and ws else re.sub(r" \(.*\)$", "", u["name"])
+    row = margins(hbox(8), 3, 6, 3, 6)
+    row.pack_start(label(span(title, 12), ellipsize=True), True, True, 0)
+    right = hbox(6)
+    right.set_valign(Gtk.Align.CENTER)
+    if ws:
+        for w in ws:
+            right.pack_start(meter_line(u, w, display, accent, 112 if len(ws) == 1 else 36, index, intro), False, False, 0)
+        if u.get("error"):
+            right.set_opacity(0.55)
+    elif extras:
+        right.pack_start(label(span(extras[0]["label"].lower(), 11, C["muted"])), False, False, 0)
+        right.pack_start(label(span(extras[0]["value"], 12, weight="bold")), False, False, 0)
+    else:
+        right.pack_start(label(span(u.get("error") or "no data", 11, C["muted"]), ellipsize=True), False, False, 0)
+    row.pack_end(right, False, False, 0)
+    return hover_box(row, tip_text(u, display))
+
+
+def compact_card(pid, accounts, display, gauge="ring", index=0, intro=False):
     first = accounts[0]
     name = re.sub(r" \(.*\)$", "", first["name"])
-    box = margins(vbox(), 10, 6, 6, 6)
+    accent = C.get(pid, C["text"])
+    box = margins(vbox(), 10 if gauge == "ring" else 8, 6, 6, 6)
     top = margins(hbox(0), left=6, right=6)
-    top.pack_start(
-        label(span(f"{ICONS.get(pid, '')}  ", 13.5, C.get(pid, C["muted"]), "bold") + span(name, 13.5, weight="bold")),
-        True, True, 0,
-    )
+    top.pack_start(logo_title(pid, name), True, True, 0)
     right = f"{len(accounts)} accounts" if len(accounts) > 1 else (first.get("plan") or "").upper()
     top.pack_end(label(span(right, 10.5, C["muted"], "bold"), xalign=1), False, False, 0)
     box.pack_start(top, False, False, 0)
-    rows = margins(vbox(), top=6)
+    rows = margins(vbox(), top=6 if gauge == "ring" else 4)
     for u in accounts:
-        rows.pack_start(account_row(u, display), False, False, 0)
+        if gauge == "bar":
+            rows.pack_start(account_meter_row(u, display, accent, index, intro), False, False, 0)
+        else:
+            rows.pack_start(account_row(u, display), False, False, 0)
     box.pack_start(rows, False, False, 0)
     outer = styled(vbox(), "ccard")
     outer.pack_start(box, True, True, 0)
-    return outer
+    return hover_card(outer)
+
+
+def strip_chip(u, display, gauge, index, intro):
+    """One account in the strip: a ring pair around the mark (or the mark and a meter per limit) and its numbers."""
+    short, long = slots(u)
+    ws = [w for w in (short, long) if w is not None]
+    extras = u.get("extras") or []
+    accent = C.get(u["id"], C["text"])
+    content = hbox(7)
+    if gauge == "bar":
+        mark = styled(Gtk.Box(), "mark")
+        mark.set_size_request(26, 26)
+        mark.set_valign(Gtk.Align.CENTER)
+        lg = logo(u["id"], accent, 14)
+        lg.set_halign(Gtk.Align.CENTER)
+        mark.pack_start(lg, True, True, 0)
+        content.pack_start(mark, False, False, 0)
+        col = vbox(0)
+        col.set_valign(Gtk.Align.CENTER)
+        if ws:
+            for w in ws:
+                col.pack_start(meter_line(u, w, display, accent, 46, index, intro), False, False, 0)
+            if len(ws) == 1:
+                who = short_account(u) or (f"{extras[0]['value']} {extras[0]['label'].lower()}" if extras else "")
+                if who:
+                    col.pack_start(label(span(who, 10, C["muted"])), False, False, 0)
+        elif extras:
+            col.pack_start(label(span(extras[0]["value"], 12.5, weight="bold")), False, False, 0)
+            col.pack_start(label(span(extras[0]["label"].lower(), 10, C["muted"])), False, False, 0)
+        else:
+            col.pack_start(label(span(re.sub(r" \(.*\)$", "", u["name"]), 12, weight="bold")), False, False, 0)
+            col.pack_start(label(span("error" if u.get("error") else "no data", 10, C["warn"] if u.get("error") else C["muted"])), False, False, 0)
+        content.pack_start(col, False, False, 0)
+    else:
+        content.pack_start(Ring(u, display, 32, 3, accent), False, False, 0)
+        col = vbox(0)
+        col.set_valign(Gtk.Align.CENTER)
+        main = short or long
+        other = long if short is not None and long is not None else None
+        if main is not None:
+            lv = level(main["usedPct"])
+            col.pack_start(
+                label(span(f"{round(shown_pct(main, display))}%", 13, lv or C["text"], "bold") + span(f" {slot_name(main)}", 10, C["muted"])),
+                False, False, 0,
+            )
+            if other is not None:
+                sub, color = f"{slot_name(other)} {round(shown_pct(other, display))}%", level(other["usedPct"]) or C["muted"]
+            else:
+                sub, color = short_account(u), C["muted"]
+        elif extras:
+            col.pack_start(label(span(extras[0]["value"], 13, weight="bold")), False, False, 0)
+            sub, color = extras[0]["label"].lower(), C["muted"]
+        else:
+            col.pack_start(label(span(re.sub(r" \(.*\)$", "", u["name"]), 12, weight="bold")), False, False, 0)
+            sub, color = "no data", C["muted"]
+        if sub:
+            col.pack_start(label(span(sub, 10, color)), False, False, 0)
+        content.pack_start(col, False, False, 0)
+    chip = styled(hover_box(margins(content, 1, 10 if gauge == "ring" else 6, 1, 1), tip_text(u, display)), "chip")
+    # Numbers kept from a failed refresh fade back a little.
+    target = 0.55 if u.get("error") and ws else 1.0
+    if intro:
+        fade_in(chip, index, target=target)
+    else:
+        chip.set_opacity(target)
+    return chip
+
+
+class Spin(Gtk.DrawingArea):
+    """A glyph that turns while `spinning` (the refresh arrow during a refresh)."""
+
+    def __init__(self, text, size, spinning):
+        super().__init__()
+        self.text, self.size, self.spinning = text, size, spinning
+        self.t0 = time.monotonic()
+        self.set_size_request(round(size * 1.3), round(size * 1.3))
+        self.connect("draw", self.draw)
+        if spinning:
+            self.add_tick_callback(lambda w, clock: (w.queue_draw(), True)[1])
+
+    def draw(self, _w, cr):
+        w, h = self.get_allocated_width(), self.get_allocated_height()
+        layout = self.create_pango_layout("")
+        color = self.get_style_context().get_color(self.get_state_flags())
+        layout.set_markup(span(self.text, self.size))
+        lw, lh = layout.get_pixel_size()
+        cr.translate(w / 2, h / 2)
+        if self.spinning:
+            cr.rotate(((time.monotonic() - self.t0) / 0.9 % 1) * 2 * math.pi)
+        cr.set_source_rgba(color.red, color.green, color.blue, color.alpha)
+        cr.move_to(-lw / 2, -lh / 2)
+        PangoCairo.show_layout(cr, layout)
+
+
+def spin_button(text, tip, action, spinning):
+    b = styled(Gtk.Button(), "hbtn")
+    b.add(Spin(text, 12, spinning))
+    b.set_tooltip_text(tip)
+    b.set_relief(Gtk.ReliefStyle.NONE)
+    b.set_can_focus(False)
+    b.connect("clicked", lambda *_: action())
+    return b
 
 
 def segmented(options, value, pick):
@@ -902,9 +1259,16 @@ def segmented(options, value, pick):
             styled(b, "on")
         b.set_can_focus(False)
         b.get_child().set_xalign(0.5)
-        b.connect("clicked", lambda _b, v=v: pick(v))
+        b.connect("clicked", lambda _b, v=v: choose(_b, v))
         box.pack_start(b, False, False, 0)
     box.set_valign(Gtk.Align.CENTER)
+
+    def choose(btn, v):
+        # The highlight moves first (a CSS transition), then the choice applies.
+        for ch in box.get_children():
+            ch.get_style_context().remove_class("on")
+        btn.get_style_context().add_class("on")
+        GLib.timeout_add(180, lambda: pick(v) and False)
     return box
 
 
@@ -937,7 +1301,65 @@ class Floating(Gtk.Window):
             self.set_icon_from_file(ICON_PATH)
         self.frame = styled(vbox(), "frame")
         self.frame.set_size_request(width, -1)
-        self.add(self.frame)
+        self.width = width
+        self.strip = False
+        # While a refresh runs, a soft light sweeps across the frame.
+        self.shine = Gtk.DrawingArea()
+        self.shine.connect("draw", self.draw_shine)
+        self.shining, self.shine_alpha, self.shine_t0, self.shine_tick = False, 0.0, time.monotonic(), None
+        overlay = Gtk.Overlay()
+        overlay.add(self.frame)
+        overlay.add_overlay(self.shine)
+        overlay.set_overlay_pass_through(self.shine, True)
+        self.add(overlay)
+
+    def set_strip(self, on):
+        self.strip = on
+        ctx = self.frame.get_style_context()
+        (ctx.add_class if on else ctx.remove_class)("strip")
+        self.frame.set_size_request(-1 if on else self.width, -1)
+
+    def set_shimmer(self, on):
+        if on == self.shining:
+            return
+        self.shining = on
+        if on:
+            self.shine_t0 = time.monotonic()
+        if self.shine_tick is None:
+            self.shine_tick = self.shine.add_tick_callback(self.shine_step)
+
+    def shine_step(self, w, _clock):
+        self.shine_alpha += ((1 if self.shining else 0) - self.shine_alpha) * 0.12
+        w.queue_draw()
+        if not self.shining and self.shine_alpha < 0.02:
+            self.shine_alpha, self.shine_tick = 0.0, None
+            w.queue_draw()
+            return False
+        return True
+
+    def draw_shine(self, w, cr):
+        if self.shine_alpha <= 0 or cairo is None:
+            return
+        W, H = w.get_allocated_width(), w.get_allocated_height()
+        r = min(23 if self.strip else 12, H / 2)
+        cr.new_sub_path()
+        cr.arc(W - r, r, r, -math.pi / 2, 0)
+        cr.arc(W - r, H - r, r, 0, math.pi / 2)
+        cr.arc(r, H - r, r, math.pi / 2, math.pi)
+        cr.arc(r, r, r, math.pi, 3 * math.pi / 2)
+        cr.close_path()
+        cr.clip()
+        k = ((time.monotonic() - self.shine_t0) / 1.3) % 1
+        k = 0.5 - 0.5 * math.cos(math.pi * k)
+        mid = W * (-0.2 + 1.4 * k)
+        band = max(60, W * 0.25)
+        red, green, blue = rgb(C["text"])
+        grad = cairo.LinearGradient(mid - band, 0 if self.strip else -H * 0.2, mid + band, 0 if self.strip else H * 0.2)
+        grad.add_color_stop_rgba(0, red, green, blue, 0)
+        grad.add_color_stop_rgba(0.5, red, green, blue, 0.11 * self.shine_alpha)
+        grad.add_color_stop_rgba(1, red, green, blue, 0)
+        cr.set_source(grad)
+        cr.paint()
 
     def drag_area(self, child, menu=None):
         eb = Gtk.EventBox()
@@ -954,12 +1376,24 @@ class Floating(Gtk.Window):
         return eb
 
     def set_content(self, widget):
+        # On the right half of the screen the right edge stays put (the strip grows leftward); elsewhere the left one.
+        anchor = None
+        gw = self.get_window()
+        if gw is not None:
+            x, y = self.get_position()
+            w, _ = self.get_size()
+            area = Gdk.Display.get_default().get_monitor_at_window(gw).get_workarea()
+            if x + w / 2 > area.x + area.width / 2:
+                anchor = (x + w, y)
         for ch in self.frame.get_children():
             ch.destroy()
         self.frame.pack_start(widget, True, True, 0)
         self.frame.show_all()
-        # Shrink back when the content gets shorter; the top-left corner stays put.
+        # Shrink back when the content gets shorter.
         self.resize(1, 1)
+        if anchor is not None:
+            nw = self.get_preferred_size()[1].width
+            self.move(anchor[0] - nw, anchor[1])
 
 
 # ---- accounts ------------------------------------------------------------------------------
@@ -1066,8 +1500,13 @@ class App(Gtk.Application):
         self.has_tray = False
         self.tray = None
 
+        UI_SCALE[0] = max(1, Gdk.Display.get_default().get_monitor(0).get_scale_factor())
         self.win = Floating(self, 304)
         self.win.set_title("OpenUsage")
+        # Strip: its buttons stay faint until the pointer comes over it.
+        self.win.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+        self.win.connect("enter-notify-event", lambda *_: self.fade_tools(1.0))
+        self.win.connect("leave-notify-event", lambda _w, ev: ev.detail != Gdk.NotifyType.INFERIOR and self.fade_tools(0.35))
         self.win.stick()
         self.topmost = settings.get("topmost", True) is not False
         self.win.set_keep_above(self.topmost)
@@ -1076,6 +1515,10 @@ class App(Gtk.Application):
         self.place()
         self.build()
         self.win.show_all()
+        # The strip's width is only known now.
+        right = settings.get("right")
+        if isinstance(right, int) and isinstance(settings.get("y"), int):
+            self.win.move(right - self.win.get_preferred_size()[1].width, settings["y"])
         self.setup_tray()
 
         GLib.timeout_add_seconds(REFRESH_MINUTES * 60, lambda: self.model.refresh() or True)
@@ -1106,8 +1549,14 @@ class App(Gtk.Application):
 
     def moved(self, win, _ev):
         x, y = win.get_position()
-        if (settings.get("x"), settings.get("y")) != (x, y):
-            settings["x"], settings["y"] = x, y
+        w, _ = win.get_size()
+        # On the right half of the screen the right edge is what stays put, also across restarts.
+        right = None
+        if win.get_window() is not None:
+            area = Gdk.Display.get_default().get_monitor_at_window(win.get_window()).get_workarea()
+            right = x + w if x + w / 2 > area.x + area.width / 2 else None
+        if (settings.get("x"), settings.get("y"), settings.get("right")) != (x, y, right):
+            settings["x"], settings["y"], settings["right"] = x, y, right
             # Many configure events arrive during a drag: save once it settles.
             if getattr(self, "save_timer", None):
                 GLib.source_remove(self.save_timer)
@@ -1136,7 +1585,52 @@ class App(Gtk.Application):
         m = self.model
         return span("refreshing..." if m.refreshing else format_ago(m.updated_at), 11.5, C["muted"])
 
+    def fade_tools(self, to):
+        tools = getattr(self, "strip_tools", None)
+        if tools is None or tools.get_parent() is None:
+            return
+        start = tools.get_opacity()
+        animate(tools, 200 if to > start else 400, lambda k: tools.set_opacity(start + (to - start) * ease_out(k)))
+
+    def build_strip(self):
+        m = self.model
+        row = margins(hbox(2), 4, 5, 4, 5)
+        grip = margins(label(span("◷", 14, C["muted"])), left=7, right=5)
+        grip.set_tooltip_text(f"OpenUsage - {m.last_error}" if m.last_error else f"OpenUsage - {format_ago(m.updated_at)}")
+        row.pack_start(grip, False, False, 0)
+        shown = m.shown()
+        prev = None
+        for i, u in enumerate(shown):
+            # A hairline between providers; accounts of the same provider sit together.
+            if prev is not None and prev != u["id"]:
+                sep = styled(Gtk.Box(), "divider")
+                sep.set_size_request(1, 20)
+                sep.set_valign(Gtk.Align.CENTER)
+                row.pack_start(margins(sep, left=3, right=3), False, False, 0)
+            row.pack_start(strip_chip(u, m.display, m.gauge, i, m.intro), False, False, 0)
+            prev = u["id"]
+        if not shown:
+            row.pack_start(margins(label(span("Loading..." if m.refreshing else "No data", 12, C["muted"])), left=4, right=8), False, False, 0)
+        tools = hbox(0)
+        tools.set_valign(Gtk.Align.CENTER)
+        tools.pack_start(spin_button("⟳", "Refresh", m.refresh, m.refreshing), False, False, 0)
+        tools.pack_start(with_dot(header_button("⚙", "Settings", self.show_settings), m.update["behind"] > 0), False, False, 0)
+        tools.set_opacity(0.35)
+        self.strip_tools = tools
+        row.pack_start(margins(tools, left=2), False, False, 0)
+        self.win.set_content(self.win.drag_area(row, self.make_menu))
+
     def build(self):
+        m = self.model
+        self.win.set_strip(m.layout == "bar")
+        if m.layout == "bar":
+            self.build_strip()
+        else:
+            self.build_panel()
+        self.win.set_shimmer(m.refreshing)
+        m.intro = False
+
+    def build_panel(self):
         m = self.model
         root = margins(vbox(), 10, 14, 10, 14)
 
@@ -1147,7 +1641,7 @@ class App(Gtk.Application):
         head.pack_start(with_dot(header_button("⚙", "Settings", self.show_settings), m.update["behind"] > 0), False, False, 0)
         head.pack_start(header_button("+", "Add account", self.show_add_menu), False, False, 0)
         head.pack_start(header_button("Used" if m.display == "used" else "Left", "Used / left", m.toggle_display), False, False, 0)
-        head.pack_start(header_button("⟳", "Refresh", m.refresh), False, False, 0)
+        head.pack_start(spin_button("⟳", "Refresh", m.refresh, m.refreshing), False, False, 0)
         hide_tip = "Hide (tray icon brings it back)" if self.has_tray else "Minimize"
         head.pack_start(header_button("✕", hide_tip, self.hide_window), False, False, 0)
         root.pack_start(margins(self.win.drag_area(head, self.make_menu), bottom=8), False, False, 0)
@@ -1157,12 +1651,15 @@ class App(Gtk.Application):
         if not shown:
             root.pack_start(label(span("Loading..." if m.refreshing else "No data", 13, C["muted"])), False, False, 0)
         cards = vbox(8)
-        if m.layout == "compact":
-            for pid, accounts in groups(shown):
-                cards.pack_start(compact_card(pid, accounts, m.display), False, False, 0)
-        else:
-            for u in shown:
-                cards.pack_start(card(u, m.display), False, False, 0)
+        blocks = (
+            [compact_card(pid, accounts, m.display, m.gauge, i, m.intro) for i, (pid, accounts) in enumerate(groups(shown))]
+            if m.layout == "compact"
+            else [card(u, m.display, i, m.intro) for i, u in enumerate(shown)]
+        )
+        for i, b in enumerate(blocks):
+            cards.pack_start(b, False, False, 0)
+            if m.intro:
+                fade_in(b, i)
         root.pack_start(cards, False, False, 0)
 
         root.pack_start(margins(divider(), top=10, bottom=6), False, False, 0)
@@ -1187,6 +1684,8 @@ class App(Gtk.Application):
         w.connect("delete-event", lambda *_: self.close_settings() or True)
         self.settings_win = w
         self.model.run_keys([])
+        # Opening plays the rows in one after the other; rebuilds while it stays open don't.
+        self.settings_intro = True
         self.build_settings()
         # Beside the widget: to its left when there is room, else to its right.
         x, y = self.win.get_position()
@@ -1240,8 +1739,14 @@ class App(Gtk.Application):
             option("Numbers", "Default for every limit", segmented([("used", "Used"), ("remaining", "Left")], m.display, m.set_display)),
             False, False, 0,
         )
+        notes = {"normal": "A card per account", "compact": "A line per account", "bar": "One slim strip"}
         root.pack_start(
-            margins(option("Layout", "Compact: a line per account", segmented([("normal", "Normal"), ("compact", "Compact")], m.layout, m.set_layout)), top=8),
+            margins(option("Layout", notes[m.layout], segmented([("normal", "Normal"), ("compact", "Compact"), ("bar", "Strip")], m.layout, m.set_layout)), top=8),
+            False, False, 0,
+        )
+        gauge_note = "For Compact and Strip" if m.layout == "normal" else "Slim meters" if m.gauge == "bar" else "Rings around the numbers"
+        root.pack_start(
+            margins(option("Gauges", gauge_note, segmented([("ring", "Rings"), ("bar", "Bars")], m.gauge, m.set_gauge)), top=8),
             False, False, 0,
         )
         root.pack_start(margins(divider(), top=16, bottom=14), False, False, 0)
@@ -1254,7 +1759,7 @@ class App(Gtk.Application):
             k = m.keys.get(pid)
             row = hbox(6)
             text = vbox(1)
-            text.pack_start(label(span(f"{ICONS.get(pid, '')}  ", 13, C.get(pid, C["muted"])) + span(PROVIDER_NAMES[pid], 13)), False, False, 0)
+            text.pack_start(logo_title(pid, PROVIDER_NAMES[pid], 13, weight=None), False, False, 0)
             text.pack_start(label(span(key_status(k), 11, C["muted"])), False, False, 0)
             row.pack_start(text, True, True, 0)
             row.pack_end(dialog_button("Change" if k and k.get("source") else "Add key", lambda pid=pid: self.ask_key(pid), enabled=bool(k)), False, False, 0)
@@ -1298,6 +1803,10 @@ class App(Gtk.Application):
             buttons.pack_end(dialog_button("Update now", lambda: m.run_update("apply", self.relaunch), True, idle), False, False, 0)
         buttons.pack_end(dialog_button("Check for updates", lambda: m.run_update("check"), False, idle), False, False, 0)
         root.pack_start(margins(buttons, top=14), False, False, 0)
+        if getattr(self, "settings_intro", False):
+            self.settings_intro = False
+            for i, child in enumerate(root.get_children()):
+                fade_in(child, min(i, 16), step=22)
         self.settings_win.set_content(root)
 
     def relaunch(self):
@@ -1314,20 +1823,43 @@ class App(Gtk.Application):
     # ---- window
 
     def show_window(self):
+        # Opening fades the widget in (where the desktop composites windows; elsewhere it just appears).
+        self.hiding = False
+        appearing = not self.win.get_visible()
+        # Reopened mid fade-out: back to full at once.
+        self.win.set_opacity(0 if appearing else 1)
         self.win.deiconify()
         self.win.show()
         self.win.present()
+        if appearing:
+            animate(self.win, 220, lambda k: self.win.set_opacity(ease_out(k)))
+
+    def fade_out(self):
+        """Closing: a quick fade, then hidden."""
+        if getattr(self, "hiding", False):
+            return
+        self.hiding = True
+
+        def step(k):
+            if not self.hiding:
+                return
+            self.win.set_opacity(1 - ease_out(k))
+            if k >= 1:
+                self.hiding = False
+                self.win.hide()
+                self.win.set_opacity(1)
+        animate(self.win, 170, step)
 
     def hide_window(self):
         # Without a tray icon to bring it back, minimizing keeps it one click away in the taskbar.
         if self.has_tray:
-            self.win.hide()
+            self.fade_out()
         else:
             self.win.iconify()
 
     def toggle_window(self):
-        if self.win.get_visible():
-            self.win.hide()
+        if self.win.get_visible() and not getattr(self, "hiding", False):
+            self.fade_out()
         else:
             self.show_window()
 

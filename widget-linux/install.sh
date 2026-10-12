@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if ! python3 -c 'import gi; gi.require_version("Gtk", "3.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
   echo "Python GTK 3 bindings not found. Install them first:" >&2
-  echo "  Debian/Ubuntu/Mint/Zorin: sudo apt install python3-gi gir1.2-gtk-3.0" >&2
+  echo "  Debian/Ubuntu/Mint/Zorin: sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0" >&2
   echo "  Fedora:                   sudo dnf install python3-gobject gtk3" >&2
   echo "  Arch:                     sudo pacman -S python-gobject gtk3" >&2
   exit 1

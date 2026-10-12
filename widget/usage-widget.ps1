@@ -21,6 +21,15 @@ $Icons = @{
   devin = [string][char]0x25C7; grok = [string][char]0x2726; kilo = [string][char]0x25C6; ollama = [string][char]0x25C9
   'opencode-go' = [string][char]0x25A3; openrouter = [string][char]0x21C4; zai = [string][char]0x25B2
 }
+# The providers' own marks (assets/providers/*.svg, one path each); the glyphs above stand in for any without one.
+$Logos = @{}; $LogoData = @{}
+foreach ($f in @(Get-ChildItem (Join-Path $Root 'assets\providers') -Filter *.svg -ErrorAction SilentlyContinue)) {
+  try {
+    $d = ([regex]::Matches((Get-Content $f.FullName -Raw), '\sd="([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) -join ' '
+    if ($d) { $Logos[$f.BaseName] = [System.Windows.Media.Geometry]::Parse("F1 $d"); $Logos[$f.BaseName].Freeze(); $LogoData[$f.BaseName] = "F1 $d" }
+  } catch {}
+}
+if ($Logos.opencode) { $Logos['opencode-go'] = $Logos.opencode; $LogoData['opencode-go'] = $LogoData.opencode }
 
 # ---- single instance ----------------------------------------------------------
 $mutex = New-Object System.Threading.Mutex($false, 'Local\usage-widget')
@@ -41,7 +50,9 @@ function Set-State([hashtable]$patch) {
 }
 $state = Get-State
 $script:display = if ($state.display) { $state.display } else { 'used' }
-$script:layout = if ($state.layout -eq 'compact') { 'compact' } else { 'normal' }
+$script:layout = if (@('compact', 'bar') -contains $state.layout) { [string]$state.layout } elseif ($state.layout -eq 'bars') { 'bar' } else { 'normal' }
+# How compact and strip draw a limit: 'ring' or 'bar' (a slim meter).
+$script:gauge = if ($state.gauge -eq 'bar' -or $state.layout -eq 'bars') { 'bar' } else { 'ring' }
 # Providers switched off: not fetched and not shown. At the first start only the ones set up on this PC are on;
 # "seen" remembers which were found, so one installed later turns on by itself and one switched off stays off.
 $script:hiddenProviders = @($state.hiddenProviders | Where-Object { $_ })
@@ -93,8 +104,11 @@ function Brush([string]$hex) { [System.Windows.Media.BrushConverter]::new().Conv
       </Setter>
     </Style>
   </Window.Resources>
-  <Border Margin="8" Background="$($C.Bg)" BorderBrush="$($C.Border)" BorderThickness="1" CornerRadius="12" Padding="14,10,14,10">
+  <Grid>
+  <Border x:Name="Frame" Margin="8" Background="$($C.Bg)" BorderBrush="$($C.Border)" BorderThickness="1" CornerRadius="12" Padding="14,10,14,10">
     <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.35"/></Border.Effect>
+    <Grid>
+    <Border x:Name="FrameShimmer" Margin="-14,-10,-14,-10" CornerRadius="11" IsHitTestVisible="False" Opacity="0"/>
     <StackPanel>
       <DockPanel x:Name="Header" Background="Transparent">
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
@@ -107,7 +121,8 @@ function Brush([string]$hex) { [System.Windows.Media.BrushConverter]::new().Conv
           </Button>
           <Button x:Name="AddBtn" Style="{StaticResource Btn}" ToolTip="Add account">+</Button>
           <Button x:Name="ModeBtn" Style="{StaticResource Btn}" ToolTip="Used / left">Used</Button>
-          <Button x:Name="RefreshBtn" Style="{StaticResource Btn}" ToolTip="Refresh">&#x27F3;</Button>
+          <Button x:Name="RefreshBtn" Style="{StaticResource Btn}" ToolTip="Refresh" RenderTransformOrigin="0.5,0.5">
+            <Button.RenderTransform><RotateTransform/></Button.RenderTransform>&#x27F3;</Button>
           <Button x:Name="MinBtn" Style="{StaticResource Btn}" ToolTip="Minimize">&#x2013;</Button>
           <Button x:Name="HideBtn" Style="{StaticResource Btn}" ToolTip="Hide (tray icon brings it back)">&#x2715;</Button>
         </StackPanel>
@@ -125,12 +140,36 @@ function Brush([string]$hex) { [System.Windows.Media.BrushConverter]::new().Conv
         </DockPanel>
       </StackPanel>
     </StackPanel>
+    </Grid>
   </Border>
+  <!-- Bar layout: one slim pill, a chip per account. -->
+  <Border x:Name="BarFrame" Margin="8" Visibility="Collapsed" Background="$($C.Bg)" BorderBrush="$($C.Border)" BorderThickness="1"
+          CornerRadius="23" Padding="5,4,5,4">
+    <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.35"/></Border.Effect>
+    <Grid>
+      <Border x:Name="Shimmer" CornerRadius="19" IsHitTestVisible="False" Opacity="0"/>
+      <StackPanel Orientation="Horizontal" Background="Transparent">
+        <Grid x:Name="BarGrip" Width="26" Height="38" Background="Transparent" Cursor="SizeAll">
+          <TextBlock Text="&#x25F7;" Foreground="$($C.Muted)" FontSize="14" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Grid>
+        <StackPanel x:Name="BarChips" Orientation="Horizontal" VerticalAlignment="Center"/>
+        <StackPanel x:Name="BarTools" Orientation="Horizontal" VerticalAlignment="Center" Margin="2,0,0,0" Opacity="0.35">
+          <Button x:Name="BarRefresh" Style="{StaticResource Btn}" ToolTip="Refresh" RenderTransformOrigin="0.5,0.5">
+            <Button.RenderTransform><RotateTransform/></Button.RenderTransform>&#x27F3;</Button>
+          <Button x:Name="BarGear" Style="{StaticResource Btn}" ToolTip="Settings">
+            <TextBlock Text="&#x2699;" FontFamily="Segoe UI Symbol"/>
+          </Button>
+        </StackPanel>
+      </StackPanel>
+    </Grid>
+  </Border>
+  </Grid>
 </Window>
 "@
 $win = [Windows.Markup.XamlReader]::Load([System.Xml.XmlNodeReader]::new($xaml))
 $ui = @{}
-foreach ($n in 'Header', 'GearBtn', 'GearDot', 'AddBtn', 'ModeBtn', 'RefreshBtn', 'MinBtn', 'HideBtn', 'Body', 'List', 'Updated', 'ErrorText') { $ui[$n] = $win.FindName($n) }
+foreach ($n in 'Frame', 'FrameShimmer', 'Header', 'GearBtn', 'GearDot', 'AddBtn', 'ModeBtn', 'RefreshBtn', 'MinBtn', 'HideBtn', 'Body', 'List', 'Updated', 'ErrorText',
+  'BarFrame', 'Shimmer', 'BarGrip', 'BarChips', 'BarTools', 'BarRefresh', 'BarGear') { $ui[$n] = $win.FindName($n) }
 
 $area = [System.Windows.SystemParameters]::WorkArea
 $win.Left = if ($null -ne $state.x) { [double]$state.x } else { $area.Right - 330 }
@@ -160,6 +199,35 @@ function Format-Ago($ms) {
   if (-not $ms) { return '' }
   $m = [math]::Round(((Get-Date) - [DateTimeOffset]::FromUnixTimeMilliseconds([long]$ms).LocalDateTime).TotalMinutes)
   if ($m -lt 1) { 'updated just now' } elseif ($m -lt 60) { "updated $m min ago" } else { "updated $([math]::Round($m / 60)) h ago" }
+}
+
+# A provider's mark, fitted to a $size box; its glyph when there is no mark.
+function New-Logo([string]$id, $color, [double]$size = 13) {
+  if (-not $Logos[$id]) {
+    $t = New-Text $Icons[$id] $color $size
+    $t.VerticalAlignment = 'Center'
+    return $t
+  }
+  $p = New-Object System.Windows.Shapes.Path
+  $p.Data = $Logos[$id]
+  $p.Stretch = 'Uniform'
+  $p.Width = $size; $p.Height = $size
+  $p.Fill = Brush $color
+  $p.VerticalAlignment = 'Center'
+  return $p
+}
+
+# The mark inside a line of text.
+function New-LogoInline([string]$id, $color, [double]$size = 13) {
+  $c = New-Object System.Windows.Documents.InlineUIContainer (New-Logo $id $color $size)
+  $c.BaselineAlignment = 'Center'
+  return $c
+}
+
+# The same for XAML written as text (dialog titles, settings rows).
+function Get-LogoXaml([string]$id, [string]$color, [double]$size = 13) {
+  if (-not $Logos[$id]) { return "<Run Foreground=`"$color`">$($Icons[$id])</Run>" }
+  return "<InlineUIContainer BaselineAlignment=`"Center`"><Path Width=`"$size`" Height=`"$size`" Stretch=`"Uniform`" Fill=`"$color`" Data=`"$($LogoData[$id])`"/></InlineUIContainer>"
 }
 
 function New-Text([string]$text, $color, [double]$size = 13, [string]$weight = 'Normal') {
@@ -194,11 +262,11 @@ try {
 $script:lastError = ''
 $script:proc = $null
 
-# In compact mode a provider with no account at all (never signed in, no key, nothing to show) gets no card;
-# the normal layout keeps it, with the hint on how to sign in.
+# In compact and bar modes a provider with no account at all (never signed in, no key, nothing to show) is left
+# out; the normal layout keeps it, with the hint on how to sign in.
 function Test-Shown($u) {
   if ($script:hiddenProviders -contains $u.id) { return $false }
-  if ($script:layout -ne 'compact') { return $true }
+  if ($script:layout -eq 'normal') { return $true }
   return $u.account -or @($u.windows).Count -or @($u.extras).Count -or -not $u.error
 }
 
@@ -211,16 +279,19 @@ function Render {
       else { 'No data' }
     $ui.List.Children.Add((New-Text $msg $C.Muted)) | Out-Null
   }
-  if ($script:layout -eq 'compact') { Render-Compact } else { Render-Normal }
+  if (Test-Strip) { Render-Bar } elseif ($script:layout -eq 'compact') { Render-Compact } else { Render-Normal }
   $ui.ModeBtn.Content = if ($script:display -eq 'used') { 'Used' } else { 'Left' }
   $ui.Updated.Text = if ($script:proc) { 'refreshing...' } else { Format-Ago $script:updatedAt }
   $ui.ErrorText.Text = $script:lastError
   Update-TrayText
+  Set-Shimmer ([bool]$script:proc)
+  $script:barIntro = $false
 }
 
 # One card per account, with every limit as a bar.
 function Render-Normal {
   $first = $true
+  $index = 0
   foreach ($u in $script:shown) {
     # One card per provider so each block reads as a unit.
     $card = New-Object System.Windows.Controls.Border
@@ -237,7 +308,8 @@ function Render-Normal {
     $head = New-Object System.Windows.Controls.TextBlock
     $head.FontWeight = 'SemiBold'
     $head.FontSize = 13.5
-    $head.Inlines.Add((New-Object System.Windows.Documents.Run ("$($Icons[$u.id])  ") -Property @{ Foreground = (Brush $C.Muted) }))
+    $head.Inlines.Add((New-LogoInline $u.id $(if ($Accents[$u.id]) { $Accents[$u.id] } else { $C.Muted }) 14))
+    $head.Inlines.Add((New-Object System.Windows.Documents.Run '  '))
     $head.Inlines.Add((New-Object System.Windows.Documents.Run $u.name))
     $planBox = New-Object System.Windows.Controls.Border
     if ($u.plan) {
@@ -281,13 +353,8 @@ function Render-Normal {
       $firstMetric = $false
       $section.Children.Add($row) | Out-Null
 
-      $bar = New-Object System.Windows.Controls.ProgressBar
-      $bar.Height = 4
+      $bar = New-Fill $w.usedPct $(if ($lv) { $lv } else { $C.Muted }) $index
       $bar.Margin = '0,5,0,0'
-      $bar.Value = [math]::Max(0, [math]::Min(100, $w.usedPct))
-      $bar.BorderThickness = 0
-      $bar.Background = Brush $C.Track
-      $bar.Foreground = Brush $(if ($lv) { $lv } else { $C.Muted })
       $section.Children.Add($bar) | Out-Null
     }
     foreach ($x in $u.extras) {
@@ -296,6 +363,9 @@ function Render-Normal {
       $firstMetric = $false
       $section.Children.Add($row) | Out-Null
     }
+    Add-Lift $card
+    Add-Intro $card $index
+    $index++
     $ui.List.Children.Add($card) | Out-Null
   }
 }
@@ -393,6 +463,7 @@ function New-Ring($u, [double]$size = 42) {
     $x.HorizontalAlignment = 'Center'; $x.VerticalAlignment = 'Center'
     $g.Children.Add($x) | Out-Null
   }
+  if (@($slots.short, $slots.long) | Where-Object { $_ -and $_.usedPct -ge 80 }) { Add-Glow $g $C.Error }
   return $g
 }
 
@@ -435,6 +506,61 @@ function Add-Hover($el) {
   $el.add_MouseLeave({ param($s) $s.Background = [System.Windows.Media.Brushes]::Transparent })
 }
 
+# Compact with bars: one short line per account, its name and a meter per limit.
+function New-AccountMeterRow($u, [int]$index, [string]$accent) {
+  $row = New-Object System.Windows.Controls.Border
+  $row.CornerRadius = 6
+  $row.Padding = '6,3,6,3'
+  $row.Margin = '-6,0,-6,0'
+  Add-Hover $row
+  $row.ToolTip = New-Tip $u
+  $grid = New-Object System.Windows.Controls.Grid
+  foreach ($w in '*', 'Auto') {
+    $cd = New-Object System.Windows.Controls.ColumnDefinition
+    $cd.Width = $w
+    $grid.ColumnDefinitions.Add($cd)
+  }
+  $slots = Get-Slots $u
+  $meters = @(@($slots.short, $slots.long) | Where-Object { $_ })
+  $title = Get-ShortAccount $u
+  # No account to name (an API key): the balance, if any, says more than the plan already in the header.
+  if (-not $title) {
+    $bal = @($u.extras | Where-Object { $_.label -match 'Balance' })
+    $title = if ($bal.Count -and $meters.Count) { "$($bal[0].value) balance" } else { [string]($u.name -replace ' \(.*\)$', '') }
+  }
+  $name = New-Text $title $(if ($u.error -and -not $meters.Count) { $C.Muted } else { $C.Text }) 12
+  $name.TextTrimming = 'CharacterEllipsis'
+  $name.VerticalAlignment = 'Center'
+  $name.Margin = '0,0,8,0'
+  $grid.Children.Add($name) | Out-Null
+  $right = New-Object System.Windows.Controls.StackPanel
+  $right.Orientation = 'Horizontal'
+  $right.VerticalAlignment = 'Center'
+  [System.Windows.Controls.Grid]::SetColumn($right, 1)
+  if ($meters.Count) {
+    # One limit gets the room of two.
+    $len = if ($meters.Count -eq 1) { 112 } else { 36 }
+    foreach ($w in $meters) {
+      $m = New-Meter $w $accent $index $len
+      if ($right.Children.Count) { $m.Margin = '6,0,0,0' }
+      $right.Children.Add($m) | Out-Null
+    }
+    if ($u.error) { $right.Opacity = 0.55 }
+  } elseif (@($u.extras).Count) {
+    $x = @($u.extras)[0]
+    $right.Children.Add((New-Text "$(([string]$x.label).ToLower())  " $C.Muted 11)) | Out-Null
+    $right.Children.Add((New-Text ([string]$x.value) $C.Text 12 'SemiBold')) | Out-Null
+  } else {
+    $err = New-Text $(if ($u.error) { [string]$u.error } else { 'no data' }) $C.Muted 11
+    $err.TextTrimming = 'CharacterEllipsis'
+    $err.MaxWidth = 190
+    $right.Children.Add($err) | Out-Null
+  }
+  $grid.Children.Add($right) | Out-Null
+  $row.Child = $grid
+  return $row
+}
+
 # One line per account: ring, name with plan and next reset, then the 5h / weekly numbers on the right.
 function New-AccountRow($u) {
   $row = New-Object System.Windows.Controls.Border
@@ -456,6 +582,7 @@ function New-AccountRow($u) {
   $plan = if ($u.plan) { ([string]$u.plan).ToUpper() } else { '' }
   # Without a known account (an API key, say) there is no name: the plan, or just the next line, leads.
   $title = Get-ShortAccount $u
+  if (-not $title -and @($u.extras | Where-Object { $_.label -match 'Balance' })) { $title = "$((@($u.extras | Where-Object { $_.label -match 'Balance' }))[0].value) balance" }
   if (-not $title -and $plan) { $title = $plan; $plan = '' }
   $mid = New-Object System.Windows.Controls.StackPanel
   $mid.VerticalAlignment = 'Center'
@@ -536,6 +663,7 @@ function Render-Compact {
     $null = $groups[$u.id].Add($u)
   }
   $first = $true
+  $index = 0
   foreach ($id in $groups.Keys) {
     $accounts = @($groups[$id])
     $card = New-Object System.Windows.Controls.Border
@@ -553,7 +681,8 @@ function Render-Compact {
     $head.FontWeight = 'SemiBold'
     $head.FontSize = 13.5
     $accent = if ($Accents[$id]) { $Accents[$id] } else { $C.Muted }
-    $head.Inlines.Add((New-Object System.Windows.Documents.Run ("$($Icons[$id])  ") -Property @{ Foreground = (Brush $accent) }))
+    $head.Inlines.Add((New-LogoInline $id $accent 14))
+    $head.Inlines.Add((New-Object System.Windows.Documents.Run '  '))
     $head.Inlines.Add((New-Object System.Windows.Documents.Run ([string]($accounts[0].name -replace ' \(.*\)$', ''))))
     $count = New-Text $(if ($accounts.Count -gt 1) { "$($accounts.Count) accounts" } elseif ($accounts[0].plan) { ([string]$accounts[0].plan).ToUpper() } else { '' }) $C.Muted 10.5 'SemiBold'
     $count.VerticalAlignment = 'Center'
@@ -561,9 +690,367 @@ function Render-Compact {
 
     $rows = New-Object System.Windows.Controls.StackPanel
     $rows.Margin = '0,6,0,0'
-    foreach ($u in $accounts) { $rows.Children.Add((New-AccountRow $u)) | Out-Null }
+    if ($script:gauge -eq 'bar') {
+      $card.Padding = '12,8,12,6'
+      $rows.Margin = '0,4,0,0'
+      foreach ($u in $accounts) { $rows.Children.Add((New-AccountMeterRow $u $index $accent)) | Out-Null }
+    } else {
+      foreach ($u in $accounts) { $rows.Children.Add((New-AccountRow $u)) | Out-Null }
+    }
     $section.Children.Add($rows) | Out-Null
+    Add-Lift $card
+    Add-Intro $card $index
+    $index++
     $ui.List.Children.Add($card) | Out-Null
+  }
+}
+
+# ---- bar ----------------------------------------------------------------------
+# The slimmest layout: one pill with a chip per account. A chip is a small ring pair around the provider's mark,
+# with the main number beside it and the other one under it. Hovering a chip lifts it and shows every limit.
+$script:barIntro = $true
+$script:shimmerOn = $false
+
+function Test-Strip { $script:layout -eq 'bar' }
+
+function New-Ease([string]$kind = 'Cubic', [string]$mode = 'EaseOut') {
+  $e = New-Object "System.Windows.Media.Animation.${kind}Ease"
+  $e.EasingMode = $mode
+  return $e
+}
+
+function New-Anim([double]$from, [double]$to, [int]$ms, $ease) {
+  $a = New-Object System.Windows.Media.Animation.DoubleAnimation $from, $to, ([TimeSpan]::FromMilliseconds($ms))
+  if ($ease) { $a.EasingFunction = $ease }
+  return $a
+}
+
+# Ring pair around the provider's mark: outer = weekly (or the billing cycle), inner = 5 hours.
+function New-BarRing($u) {
+  $size = 32; $t = 3
+  $inner = $size - 2 * ($t + 2)
+  $slots = Get-Slots $u
+  $g = New-Object System.Windows.Controls.Grid
+  $g.Width = $size; $g.Height = $size
+  $key = 'bar|' + $(if ($u.key) { $u.key } else { $u.id })
+  $both = $slots.short -and $slots.long
+  $g.Children.Add((New-Track $size $t)) | Out-Null
+  if ($both) { $g.Children.Add((New-Track $inner $t)) | Out-Null }
+  if ($slots.long) {
+    $lv = Level $slots.long.usedPct
+    $g.Children.Add((New-Arc $size $t (Get-ArcPct $slots.long.usedPct) $(if ($lv) { $lv } else { $C.Muted }) "$key|long")) | Out-Null
+  }
+  if ($slots.short) {
+    $lv = Level $slots.short.usedPct
+    $g.Children.Add((New-Arc $(if ($both) { $inner } else { $size }) $t (Get-ArcPct $slots.short.usedPct) $(if ($lv) { $lv } else { $C.Text }) "$key|short")) | Out-Null
+  }
+  $accent = if ($Accents[$u.id]) { $Accents[$u.id] } else { $C.Muted }
+  $mark = if (-not $slots.short -and -not $slots.long -and $u.error -and -not @($u.extras).Count) { New-Text '!' $C.Warn 11 'SemiBold' } else { New-Logo $u.id $accent 13 }
+  $mark.HorizontalAlignment = 'Center'; $mark.VerticalAlignment = 'Center'
+  $g.Children.Add($mark) | Out-Null
+  $hot = @($slots.short, $slots.long) | Where-Object { $_ -and $_.usedPct -ge 80 } | Select-Object -First 1
+  if ($hot) { Add-Glow $g $C.Error }
+  return $g
+}
+
+# A limit at 80% or more breathes a soft glow in its warning color.
+function Add-Glow($el, [string]$color, [double]$blur = 12) {
+  $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
+  $glow.Color = [System.Windows.Media.ColorConverter]::ConvertFromString($color)
+  $glow.ShadowDepth = 0
+  $glow.BlurRadius = $blur
+  $pulse = New-Anim 0.15 0.9 1100 (New-Ease 'Sine' 'EaseInOut')
+  $pulse.AutoReverse = $true
+  $pulse.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+  $glow.BeginAnimation([System.Windows.Media.Effects.DropShadowEffect]::OpacityProperty, $pulse)
+  $el.Effect = $glow
+}
+
+# A rounded track whose fill grows in from the left on first show, in a gradient of its color. Stretches unless given a Width.
+function New-Fill([double]$used, [string]$color, [int]$index, [double]$height = 4) {
+  $track = New-Object System.Windows.Controls.Grid
+  $track.Height = $height
+  $track.ClipToBounds = $false
+  foreach ($w in 0, 1) { $track.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)) }
+  $pct = [math]::Max(0, [math]::Min(100, (Get-ArcPct $used)))
+  $track.ColumnDefinitions[0].Width = New-Object System.Windows.GridLength $pct, 'Star'
+  $track.ColumnDefinitions[1].Width = New-Object System.Windows.GridLength (100 - $pct), 'Star'
+  $bg = New-Object System.Windows.Controls.Border
+  $bg.CornerRadius = $height / 2
+  $bg.Background = Brush $C.Track
+  [System.Windows.Controls.Grid]::SetColumnSpan($bg, 2)
+  $track.Children.Add($bg) | Out-Null
+  if ($pct -le 0) { return $track }
+  $c = [System.Windows.Media.ColorConverter]::ConvertFromString($color)
+  $fade = [System.Windows.Media.Color]::FromArgb(140, $c.R, $c.G, $c.B)
+  $fill = New-Object System.Windows.Controls.Border
+  $fill.CornerRadius = $height / 2
+  $fill.MinWidth = $height
+  $fill.Background = New-Object System.Windows.Media.LinearGradientBrush $fade, $c, 0
+  $fill.RenderTransformOrigin = '0,0.5'
+  $grow = New-Object System.Windows.Media.ScaleTransform 1, 1
+  $fill.RenderTransform = $grow
+  # The fill spans its column; MinWidth keeps a sliver visible for tiny values.
+  $fill.HorizontalAlignment = 'Stretch'
+  $track.Children.Add($fill) | Out-Null
+  if ($used -ge 80) { Add-Glow $fill $color 9 }
+  if ($script:barIntro) {
+    $g = New-Anim 0 1 750 (New-Ease 'Quartic' 'EaseOut')
+    $g.BeginTime = [TimeSpan]::FromMilliseconds(120 + 70 * $index)
+    $grow.ScaleX = 0
+    $grow.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $g)
+  }
+  return $track
+}
+
+# First show of a layout: blocks fade in and rise one after the other.
+function Add-Intro($el, [int]$index, [int]$step = 70, [switch]$Force) {
+  if (-not $script:barIntro -and -not $Force) { return }
+  $shift = New-Object System.Windows.Media.TranslateTransform 0, 10
+  if ($el.RenderTransform -is [System.Windows.Media.TransformGroup]) { $el.RenderTransform.Children.Add($shift) } else { $el.RenderTransform = $shift }
+  $delay = [TimeSpan]::FromMilliseconds($step * $index)
+  $fade = New-Anim 0 $el.Opacity 380 (New-Ease)
+  $fade.BeginTime = $delay
+  $el.Opacity = 0
+  $rise = New-Anim 10 0 460 (New-Ease 'Back' 'EaseOut')
+  $rise.BeginTime = $delay
+  $el.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
+  $shift.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $rise)
+}
+
+# Cards: the border lights up and the card lifts a little under the mouse.
+function Add-Lift($card) {
+  $card.RenderTransform = New-Object System.Windows.Media.TransformGroup
+  $card.RenderTransform.Children.Add((New-Object System.Windows.Media.TranslateTransform 0, 0))
+  $card.add_MouseEnter({
+    param($s)
+    $s.BorderBrush = Brush $C.Border
+    $t = $s.RenderTransform.Children[0]
+    $t.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, (New-Anim $t.Y -2 180 (New-Ease 'Back' 'EaseOut')))
+  })
+  $card.add_MouseLeave({
+    param($s)
+    $s.BorderBrush = Brush $C.CardBorder
+    $t = $s.RenderTransform.Children[0]
+    $t.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, (New-Anim $t.Y 0 260 (New-Ease)))
+  })
+}
+
+# One limit as a slim meter: "5h ▬▬▬▬▬▭▭ 72%". The fill grows in from the left and glows when it runs hot.
+function New-Meter($w, [string]$accent, [int]$index, [double]$len = 46) {
+  $used = [double]$w.usedPct
+  $lv = Level $used
+  $color = if ($lv) { $lv } else { $accent }
+  $row = New-Object System.Windows.Controls.StackPanel
+  $row.Orientation = 'Horizontal'
+  # Kept to a few letters so the meters line up: "Credits" -> "cr", "Daily" -> "day".
+  $label = switch -Regex (Get-SlotName $w) { '^Credit' { 'cr'; break } '^Daily' { 'day'; break } '^.{4,}' { $_.Substring(0, 3).ToLower(); break } default { $_ } }
+  $name = New-Text $label $C.Muted 10
+  $name.MinWidth = 16
+  $name.VerticalAlignment = 'Center'
+  $row.Children.Add($name) | Out-Null
+  $track = New-Fill $used $color $index 5
+  $track.Width = $len
+  $track.VerticalAlignment = 'Center'
+  $track.Margin = '3,0,5,0'
+  $row.Children.Add($track) | Out-Null
+  $num = New-Text ("{0}%" -f [math]::Round((Get-Shown $used))) $(if ($lv) { $lv } else { $C.Text }) 11 'SemiBold'
+  $num.MinWidth = 27
+  $num.VerticalAlignment = 'Center'
+  $row.Children.Add($num) | Out-Null
+  return $row
+}
+
+# Bars layout: the provider's mark, then a meter per limit (or the balance when that is all there is).
+function New-MeterBlock($u, [int]$index) {
+  $slots = Get-Slots $u
+  $accent = if ($Accents[$u.id]) { $Accents[$u.id] } else { $C.Text }
+  $row = New-Object System.Windows.Controls.StackPanel
+  $row.Orientation = 'Horizontal'
+  $badge = New-Object System.Windows.Controls.Border
+  $badge.Width = 26; $badge.Height = 26
+  $badge.CornerRadius = 13
+  $badge.Background = Brush $C.Card
+  $badge.VerticalAlignment = 'Center'
+  $mark = New-Logo $u.id $accent 14
+  $mark.HorizontalAlignment = 'Center'; $mark.VerticalAlignment = 'Center'
+  $badge.Child = $mark
+  $row.Children.Add($badge) | Out-Null
+  $col = New-Object System.Windows.Controls.StackPanel
+  $col.VerticalAlignment = 'Center'
+  $col.Margin = '7,0,0,0'
+  $meters = @(@($slots.short, $slots.long) | Where-Object { $_ })
+  if ($meters.Count) {
+    foreach ($w in $meters) { $col.Children.Add((New-Meter $w $accent $index)) | Out-Null }
+    # A single limit leaves room for who it belongs to.
+    if ($meters.Count -eq 1) {
+      $who = Get-ShortAccount $u
+      if (-not $who -and @($u.extras).Count) { $who = "$(@($u.extras)[0].value) $(([string]@($u.extras)[0].label).ToLower())" }
+      if ($who) { $col.Children.Add((New-Text $who $C.Muted 10)) | Out-Null }
+    }
+  } elseif (@($u.extras).Count) {
+    $x = @($u.extras)[0]
+    $col.Children.Add((New-Text ([string]$x.value) $C.Text 12.5 'SemiBold')) | Out-Null
+    $col.Children.Add((New-Text ([string]$x.label).ToLower() $C.Muted 10)) | Out-Null
+  } else {
+    $col.Children.Add((New-Text ([string]($u.name -replace ' \(.*\)$', '')) $C.Text 12 'SemiBold')) | Out-Null
+    $col.Children.Add((New-Text $(if ($u.error) { 'error' } else { 'no data' }) $(if ($u.error) { $C.Warn } else { $C.Muted }) 10)) | Out-Null
+  }
+  $row.Children.Add($col) | Out-Null
+  return $row
+}
+
+function New-BarChip($u, [int]$index) {
+  $slots = Get-Slots $u
+  $chip = New-Object System.Windows.Controls.Border
+  $chip.CornerRadius = 17
+  $chip.Padding = '3,3,10,3'
+  $chip.Background = [System.Windows.Media.Brushes]::Transparent
+  $chip.ToolTip = New-Tip $u
+  [System.Windows.Controls.ToolTipService]::SetInitialShowDelay($chip, 250)
+  $chip.RenderTransformOrigin = '0.5,0.5'
+  $tg = New-Object System.Windows.Media.TransformGroup
+  $tg.Children.Add((New-Object System.Windows.Media.ScaleTransform 1, 1))
+  $chip.RenderTransform = $tg
+
+  if ($script:gauge -eq 'bar') {
+    $chip.Padding = '3,3,6,3'
+    $chip.Child = New-MeterBlock $u $index
+    if ($u.error -and ($slots.short -or $slots.long)) { $chip.Opacity = 0.55 }
+  } else {
+  $row = New-Object System.Windows.Controls.StackPanel
+  $row.Orientation = 'Horizontal'
+  $row.Children.Add((New-BarRing $u)) | Out-Null
+  $text = New-Object System.Windows.Controls.StackPanel
+  $text.VerticalAlignment = 'Center'
+  $text.Margin = '7,0,0,0'
+  $main = if ($slots.short) { $slots.short } else { $slots.long }
+  $other = if ($slots.short -and $slots.long) { $slots.long } else { $null }
+  if ($main) {
+    $lv = Level $main.usedPct
+    $top = New-Object System.Windows.Controls.TextBlock
+    $top.Inlines.Add((New-Object System.Windows.Documents.Run ("{0}%" -f [math]::Round((Get-Shown $main.usedPct))) -Property @{ Foreground = (Brush $(if ($lv) { $lv } else { $C.Text })); FontWeight = 'SemiBold'; FontSize = 13 }))
+    $top.Inlines.Add((New-Object System.Windows.Documents.Run (' ' + (Get-SlotName $main)) -Property @{ Foreground = (Brush $C.Muted); FontSize = 10 }))
+    $text.Children.Add($top) | Out-Null
+    $sub = if ($other) { "$(Get-SlotName $other) $([math]::Round((Get-Shown $other.usedPct)))%" } else { Get-ShortAccount $u }
+  } elseif (@($u.extras).Count) {
+    # Only a balance to show (credits, say): the amount leads.
+    $x = @($u.extras)[0]
+    $text.Children.Add((New-Text ([string]$x.value) $C.Text 13 'SemiBold')) | Out-Null
+    $sub = ([string]$x.label).ToLower()
+  } else {
+    $text.Children.Add((New-Text ([string]($u.name -replace ' \(.*\)$', '')) $C.Text 12 'SemiBold')) | Out-Null
+    $sub = 'no data'
+  }
+  if ($sub) {
+    $lv = if ($other) { Level $other.usedPct } else { $null }
+    $s2 = New-Text $sub $(if ($lv) { $lv } else { $C.Muted }) 10
+    $s2.Margin = '0,-1,0,0'
+    $text.Children.Add($s2) | Out-Null
+  }
+  $row.Children.Add($text) | Out-Null
+  $chip.Child = $row
+  # Numbers kept from a failed refresh fade back a little.
+  if ($u.error -and ($slots.short -or $slots.long)) { $chip.Opacity = 0.55 }
+  }
+
+  # Hover: the chip lifts a bit and lights up.
+  $chip.add_MouseEnter({
+    param($s)
+    $s.Background = Brush $C.Hover
+    $sc = $s.RenderTransform.Children[0]
+    foreach ($p in [System.Windows.Media.ScaleTransform]::ScaleXProperty, [System.Windows.Media.ScaleTransform]::ScaleYProperty) {
+      $sc.BeginAnimation($p, (New-Anim $sc.ScaleX 1.06 160 (New-Ease 'Back' 'EaseOut')))
+    }
+  })
+  $chip.add_MouseLeave({
+    param($s)
+    $s.Background = [System.Windows.Media.Brushes]::Transparent
+    $sc = $s.RenderTransform.Children[0]
+    foreach ($p in [System.Windows.Media.ScaleTransform]::ScaleXProperty, [System.Windows.Media.ScaleTransform]::ScaleYProperty) {
+      $sc.BeginAnimation($p, (New-Anim $sc.ScaleX 1 200 (New-Ease)))
+    }
+  })
+  # First show: the chips rise in one after the other.
+  Add-Intro $chip $index
+  return $chip
+}
+
+function Render-Bar {
+  $ui.BarChips.Children.Clear()
+  $i = 0
+  $prev = $null
+  foreach ($u in $script:shown) {
+    # A hairline between providers; accounts of the same provider sit together.
+    if ($null -ne $prev -and $prev -ne $u.id) {
+      $sep = New-Object System.Windows.Controls.Border
+      $sep.Width = 1; $sep.Height = 20
+      $sep.Margin = '3,0,3,0'
+      $sep.Background = Brush $C.Divider
+      $ui.BarChips.Children.Add($sep) | Out-Null
+    }
+    $ui.BarChips.Children.Add((New-BarChip $u $i)) | Out-Null
+    $prev = $u.id
+    $i++
+  }
+  if (-not $i) {
+    $msg = if ($script:proc -or $script:detectProc) { 'Loading...' } else { 'No data' }
+    $t = New-Text $msg $C.Muted 12
+    $t.Margin = '4,0,8,0'
+    $ui.BarChips.Children.Add($t) | Out-Null
+  }
+  $ui.BarGrip.ToolTip = if ($script:lastError) { "OpenUsage - $($script:lastError)" } elseif ($script:updatedAt) { "OpenUsage - $(Format-Ago $script:updatedAt)" } else { 'OpenUsage' }
+}
+
+# While a refresh runs, a soft light sweeps across the widget and the refresh arrows turn.
+function Set-Shimmer([bool]$on) {
+  if ($on -eq $script:shimmerOn) { return }
+  $script:shimmerOn = $on
+  $layers = $ui.Shimmer, $ui.FrameShimmer
+  $spins = $ui.BarRefresh.RenderTransform, $ui.RefreshBtn.RenderTransform
+  if (-not $on) {
+    foreach ($l in $layers) { $l.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim $l.Opacity 0 300 (New-Ease))) }
+    foreach ($sp in $spins) { $sp.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $null); $sp.Angle = 0 }
+    return
+  }
+  $c = [System.Windows.Media.ColorConverter]::ConvertFromString($C.Text)
+  $clear = [System.Windows.Media.Color]::FromArgb(0, $c.R, $c.G, $c.B)
+  $glow = [System.Windows.Media.Color]::FromArgb($(if ($light) { 22 } else { 30 }), $c.R, $c.G, $c.B)
+  foreach ($l in $layers) {
+    $brush = New-Object System.Windows.Media.LinearGradientBrush
+    # The tall panel gets a diagonal sweep, the strip a horizontal one.
+    $brush.StartPoint = if ($l -eq $ui.FrameShimmer) { '0,0' } else { '0,0.5' }
+    $brush.EndPoint = if ($l -eq $ui.FrameShimmer) { '1,1' } else { '1,0.5' }
+    foreach ($stop in @(@($clear, 0.35), @($glow, 0.5), @($clear, 0.65))) {
+      $brush.GradientStops.Add((New-Object System.Windows.Media.GradientStop $stop[0], $stop[1]))
+    }
+    $move = New-Object System.Windows.Media.TranslateTransform
+    $brush.RelativeTransform = $move
+    $l.Background = $brush
+    $sweep = New-Anim -0.7 0.7 1300 (New-Ease 'Sine' 'EaseInOut')
+    $sweep.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    $move.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $sweep)
+    $move.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $(if ($l -eq $ui.FrameShimmer) { $sweep } else { $null }))
+    $l.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim 0 1 250 $null))
+  }
+  foreach ($sp in $spins) {
+    $turn = New-Anim 0 360 900 $null
+    $turn.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    $sp.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $turn)
+  }
+}
+
+# Bar: the window follows its content's width. Others: the usual 320-wide panel.
+function Set-LayoutFrame {
+  $bar = Test-Strip
+  $ui.BarFrame.Visibility = if ($bar) { 'Visible' } else { 'Collapsed' }
+  $ui.Frame.Visibility = if ($bar) { 'Collapsed' } else { 'Visible' }
+  $script:barIntro = $true
+  if ($bar) {
+    $win.SizeToContent = 'WidthAndHeight'
+  } else {
+    $win.SizeToContent = 'Height'
+    $win.Width = 320
   }
 }
 
@@ -771,19 +1258,27 @@ function New-DialogXaml([string]$title, [string]$heading, [string]$body, [int]$w
       <Setter Property="FontWeight" Value="SemiBold"/>
     </Style>
     <Style x:Key="Seg" TargetType="RadioButton">
+      <Setter Property="MinWidth" Value="78"/>
+      <Setter Property="Padding" Value="12,4"/>
       <Setter Property="Foreground" Value="$($C.Muted)"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="FontSize" Value="12.5"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="b" Background="Transparent" CornerRadius="6" Padding="12,4" MinWidth="78">
+            <Border x:Name="b" CornerRadius="6" Padding="{TemplateBinding Padding}" MinWidth="{TemplateBinding MinWidth}">
+              <Border.Background><SolidColorBrush Color="$($C.Text)" Opacity="0"/></Border.Background>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="$($C.Text)"/></Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="b" Property="Background" Value="$($C.Text)"/>
+                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="b" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Opacity)" To="1" Duration="0:0:0.22"/>
+                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="b" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Opacity)" To="0" Duration="0:0:0.18"/>
+                </Storyboard></BeginStoryboard></Trigger.ExitActions>
                 <Setter Property="Foreground" Value="$($C.Bg)"/>
                 <Setter Property="FontWeight" Value="SemiBold"/>
               </Trigger>
@@ -797,14 +1292,29 @@ function New-DialogXaml([string]$title, [string]$heading, [string]$body, [int]$w
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="CheckBox">
-            <Border x:Name="track" Width="34" Height="18" CornerRadius="9" Background="$($C.Track)">
-              <Ellipse x:Name="thumb" Width="12" Height="12" Margin="3,0" HorizontalAlignment="Left" Fill="$($C.Muted)"/>
+            <Border x:Name="track" Width="34" Height="18" CornerRadius="9">
+              <Border.Background><SolidColorBrush Color="$($C.Track)"/></Border.Background>
+              <Ellipse x:Name="thumb" Width="12" Height="12" Margin="3,0" HorizontalAlignment="Left">
+                <Ellipse.Fill><SolidColorBrush Color="$($C.Muted)"/></Ellipse.Fill>
+                <Ellipse.RenderTransform><TranslateTransform/></Ellipse.RenderTransform>
+              </Ellipse>
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="track" Property="Background" Value="$($C.Text)"/>
-                <Setter TargetName="thumb" Property="Fill" Value="$($C.Bg)"/>
-                <Setter TargetName="thumb" Property="HorizontalAlignment" Value="Right"/>
+                <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="thumb" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" To="16" Duration="0:0:0.28">
+                    <DoubleAnimation.EasingFunction><BackEase EasingMode="EaseOut" Amplitude="0.4"/></DoubleAnimation.EasingFunction>
+                  </DoubleAnimation>
+                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="$($C.Text)" Duration="0:0:0.22"/>
+                  <ColorAnimation Storyboard.TargetName="thumb" Storyboard.TargetProperty="(Shape.Fill).(SolidColorBrush.Color)" To="$($C.Bg)" Duration="0:0:0.22"/>
+                </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                  <DoubleAnimation Storyboard.TargetName="thumb" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" To="0" Duration="0:0:0.28">
+                    <DoubleAnimation.EasingFunction><BackEase EasingMode="EaseOut" Amplitude="0.4"/></DoubleAnimation.EasingFunction>
+                  </DoubleAnimation>
+                  <ColorAnimation Storyboard.TargetName="track" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="$($C.Track)" Duration="0:0:0.22"/>
+                  <ColorAnimation Storyboard.TargetName="thumb" Storyboard.TargetProperty="(Shape.Fill).(SolidColorBrush.Color)" To="$($C.Muted)" Duration="0:0:0.22"/>
+                </Storyboard></BeginStoryboard></Trigger.ExitActions>
               </Trigger>
               <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="track" Property="Opacity" Value="0.85"/></Trigger>
               <Trigger Property="IsEnabled" Value="False"><Setter TargetName="track" Property="Opacity" Value="0.4"/></Trigger>
@@ -827,9 +1337,10 @@ function New-DialogXaml([string]$title, [string]$heading, [string]$body, [int]$w
       <Setter Property="Margin" Value="0,0,0,8"/>
     </Style>
   </Window.Resources>
-  <Border Margin="12" Background="$($C.Bg)" BorderBrush="$($C.Border)" BorderThickness="1" CornerRadius="12" Padding="18,14,18,16">
+  <Border x:Name="Root" Margin="12" Background="$($C.Bg)" BorderBrush="$($C.Border)" BorderThickness="1" CornerRadius="12" Padding="18,14,18,16"
+          RenderTransformOrigin="0.5,0.3">
     <Border.Effect><DropShadowEffect BlurRadius="20" ShadowDepth="3" Opacity="0.4"/></Border.Effect>
-    <StackPanel>
+    <StackPanel x:Name="Content">
       <DockPanel x:Name="Header" Background="Transparent" Margin="0,0,0,12">
         <Button DockPanel.Dock="Right" x:Name="CloseX" Style="{StaticResource CloseBtn}" ToolTip="Close">&#x2715;</Button>
         <TextBlock FontWeight="SemiBold" FontSize="14.5">$heading</TextBlock>
@@ -845,7 +1356,23 @@ function New-DialogXaml([string]$title, [string]$heading, [string]$body, [int]$w
 function New-Dialog([string]$xaml, [string[]]$names) {
   $dlg = [Windows.Markup.XamlReader]::Load([System.Xml.XmlNodeReader]::new([xml]$xaml))
   $d = @{ Window = $dlg }
-  foreach ($n in @('Header', 'CloseX') + $names) { $d[$n] = $dlg.FindName($n) }
+  foreach ($n in @('Header', 'CloseX', 'Root', 'Content') + $names) { $d[$n] = $dlg.FindName($n) }
+  # Opening: the dialog pops in, then its rows arrive one after the other.
+  $d.Root.RenderTransform = New-Object System.Windows.Media.ScaleTransform 0.94, 0.94
+  $d.Root.Opacity = 0
+  $dlg.add_Loaded({
+    param($s)
+    $root = $s.FindName('Root')
+    $root.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim 0 1 200 (New-Ease)))
+    foreach ($p in [System.Windows.Media.ScaleTransform]::ScaleXProperty, [System.Windows.Media.ScaleTransform]::ScaleYProperty) {
+      $root.RenderTransform.BeginAnimation($p, (New-Anim 0.94 1 320 (New-Ease 'Back' 'EaseOut')))
+    }
+    $i = 0
+    foreach ($el in @($s.FindName('Content').Children)) {
+      if ($i) { Add-Intro $el ([math]::Min($i, 16)) 22 -Force }
+      $i++
+    }
+  })
   $w = $dlg.Width
   $area = [System.Windows.SystemParameters]::WorkArea
   $dlg.Left = if ($win.IsVisible) { if ($win.Left - $w + 4 -ge $area.Left) { $win.Left - $w + 4 } else { $win.Left + $win.ActualWidth - 4 } } else { $area.Right - $w - 28 }
@@ -877,7 +1404,7 @@ function Show-NameDialog([string]$kind, [string]$suggested) {
         <Button x:Name="OkBtn" Style="{StaticResource Primary}" IsDefault="True">Sign in</Button>
       </StackPanel>
 "@
-  $heading = "<Run Foreground=`"$($C.Muted)`">$($Icons[$kind])</Run>  Add $($k.Name) account"
+  $heading = "$(Get-LogoXaml $kind $Accents[$kind] 15)  Add $($k.Name) account"
   $d = New-Dialog (New-DialogXaml "Add $($k.Name) account" $heading $body) @('Field', 'NameBox', 'Info', 'CancelBtn', 'OkBtn')
   $dlg = $d.Window
 
@@ -937,7 +1464,8 @@ $addMenu.PlacementTarget = $ui.AddBtn
 $addMenu.Placement = 'Bottom'
 foreach ($kind in $AccountKinds.Keys) {
   $mi = New-Object System.Windows.Controls.MenuItem
-  $mi.Header = "$($Icons[$kind])  $($AccountKinds[$kind].Name) account"
+  $mi.Header = "$($AccountKinds[$kind].Name) account"
+  $mi.Icon = New-Logo $kind $Accents[$kind] 14
   $mi.Tag = $kind
   $mi.add_Click({ param($s) Add-Account $s.Tag })
   $null = $addMenu.Items.Add($mi)
@@ -1076,7 +1604,7 @@ function Show-KeyDialog([string]$id) {
         <Button x:Name="OkBtn" Style="{StaticResource Primary}" IsDefault="True" IsEnabled="False">Save</Button>
       </StackPanel>
 "@
-  $heading = "<Run Foreground=`"$($Accents[$id])`">$($Icons[$id])</Run>  $name API key"
+  $heading = "$(Get-LogoXaml $id $Accents[$id] 15)  $name API key"
   $kd = New-Dialog (New-DialogXaml "$name API key" $heading $body) @('Field', 'KeyBox', 'Info', 'CancelBtn', 'OkBtn', 'KeyLink')
   $kdlg = $kd.Window
   if ($kd.KeyLink) { $kd.KeyLink.add_Click({ Start-Process $url }) }
@@ -1117,7 +1645,7 @@ function Show-Settings {
     @"
       <DockPanel Margin="$margin">
         <CheckBox x:Name="$(Get-SwitchName $id)" DockPanel.Dock="Right" Style="{StaticResource Switch}" Tag="$id" AutomationProperties.Name="Show $($ProviderNames[$id])" VerticalAlignment="Center"/>
-        <TextBlock VerticalAlignment="Center"><Run Foreground="$($Accents[$id])">$($Icons[$id])</Run>  $($ProviderNames[$id])</TextBlock>
+        <TextBlock VerticalAlignment="Center">$(Get-LogoXaml $id $Accents[$id] 14)  $($ProviderNames[$id])</TextBlock>
       </DockPanel>
 "@
   }
@@ -1129,7 +1657,7 @@ function Show-Settings {
           <Button x:Name="KeyBtn_$id" Style="{StaticResource Btn}" MinWidth="86">Add key</Button>
         </StackPanel>
         <StackPanel VerticalAlignment="Center">
-          <TextBlock><Run Foreground="$($Accents[$id])">$($Icons[$id])</Run>  $($ProviderNames[$id])</TextBlock>
+          <TextBlock>$(Get-LogoXaml $id $Accents[$id] 14)  $($ProviderNames[$id])</TextBlock>
           <TextBlock x:Name="KeyInfo_$id" Foreground="$($C.Muted)" FontSize="11"/>
         </StackPanel>
       </DockPanel>
@@ -1149,16 +1677,27 @@ function Show-Settings {
           <TextBlock Text="Default for every limit" Foreground="$($C.Muted)" FontSize="11"/>
         </StackPanel>
       </DockPanel>
+      <DockPanel Margin="0,0,0,6">
+        <TextBlock x:Name="LayoutNote" DockPanel.Dock="Right" VerticalAlignment="Bottom" Foreground="$($C.Muted)" FontSize="11"/>
+        <TextBlock Text="Layout"/>
+      </DockPanel>
+      <Border Style="{StaticResource SegBox}" Margin="0,0,0,10">
+        <UniformGrid Rows="1">
+          <RadioButton x:Name="NormalOpt" GroupName="layout" Style="{StaticResource Seg}" MinWidth="0" Padding="6,4">Normal</RadioButton>
+          <RadioButton x:Name="CompactOpt" GroupName="layout" Style="{StaticResource Seg}" MinWidth="0" Padding="6,4">Compact</RadioButton>
+          <RadioButton x:Name="BarOpt" GroupName="layout" Style="{StaticResource Seg}" MinWidth="0" Padding="6,4">Strip</RadioButton>
+        </UniformGrid>
+      </Border>
       <DockPanel>
         <Border DockPanel.Dock="Right" Style="{StaticResource SegBox}">
           <StackPanel Orientation="Horizontal">
-            <RadioButton x:Name="NormalOpt" GroupName="layout" Style="{StaticResource Seg}">Normal</RadioButton>
-            <RadioButton x:Name="CompactOpt" GroupName="layout" Style="{StaticResource Seg}">Compact</RadioButton>
+            <RadioButton x:Name="RingOpt" GroupName="gauge" Style="{StaticResource Seg}">Rings</RadioButton>
+            <RadioButton x:Name="MeterOpt" GroupName="gauge" Style="{StaticResource Seg}">Bars</RadioButton>
           </StackPanel>
         </Border>
         <StackPanel VerticalAlignment="Center">
-          <TextBlock Text="Layout"/>
-          <TextBlock Text="Compact: a line per account" Foreground="$($C.Muted)" FontSize="11"/>
+          <TextBlock Text="Gauges"/>
+          <TextBlock x:Name="GaugeNote" Foreground="$($C.Muted)" FontSize="11"/>
         </StackPanel>
       </DockPanel>
       <Border Height="1" Background="$($C.Divider)" Margin="0,16,0,14"/>
@@ -1192,7 +1731,7 @@ $($keyRows -join "`n")
 "@
   $heading = "<Run Foreground=`"$($C.Muted)`" FontFamily=`"Segoe UI Symbol`">&#x2699;</Run>  Settings"
   $d = New-Dialog (New-DialogXaml 'OpenUsage settings' $heading $body 380) @(
-    'UsedOpt', 'LeftOpt', 'NormalOpt', 'CompactOpt', 'VersionText', 'StatusDot', 'StatusText', 'CheckBtn', 'UpdateBtn')
+    'UsedOpt', 'LeftOpt', 'NormalOpt', 'CompactOpt', 'BarOpt', 'RingOpt', 'MeterOpt', 'GaugeNote', 'LayoutNote', 'VersionText', 'StatusDot', 'StatusText', 'CheckBtn', 'UpdateBtn')
   $dlg = $d.Window
 
   # One switch per provider; the last one left on can't be switched off, so the widget is never empty.
@@ -1264,13 +1803,38 @@ $($keyRows -join "`n")
 
   $d.UsedOpt.IsChecked = $script:display -eq 'used'
   $d.LeftOpt.IsChecked = $script:display -ne 'used'
-  $d.NormalOpt.IsChecked = $script:layout -ne 'compact'
+  $d.NormalOpt.IsChecked = $script:layout -eq 'normal'
   $d.CompactOpt.IsChecked = $script:layout -eq 'compact'
+  $d.BarOpt.IsChecked = $script:layout -eq 'bar'
+  $d.RingOpt.IsChecked = $script:gauge -ne 'bar'
+  $d.MeterOpt.IsChecked = $script:gauge -eq 'bar'
   # Changes apply to the widget right away.
   $setDisplay = { $script:display = if ($d.UsedOpt.IsChecked) { 'used' } else { 'remaining' }; Set-State @{ display = $script:display }; Render }
-  $setLayout = { $script:layout = if ($d.CompactOpt.IsChecked) { 'compact' } else { 'normal' }; Set-State @{ layout = $script:layout }; Render }
+  $notes = @{ normal = 'A card per account'; compact = 'A line per account'; bar = 'One slim strip' }
+  $d.LayoutNote.Text = $notes[$script:layout]
+  $setLayout = {
+    $script:layout = if ($d.BarOpt.IsChecked) { 'bar' } elseif ($d.CompactOpt.IsChecked) { 'compact' } else { 'normal' }
+    $d.LayoutNote.Text = $notes[$script:layout]
+    Set-State @{ layout = $script:layout }
+    Set-LayoutFrame
+    & $syncGauge
+    Render
+  }
+  # The full layout keeps its rings and bars; the choice is for the compact ones.
+  $syncGauge = {
+    $d.GaugeNote.Text = if ($script:layout -eq 'normal') { 'For Compact and Strip' } elseif ($script:gauge -eq 'bar') { 'Slim meters' } else { 'Rings around the numbers' }
+  }
+  & $syncGauge
+  $setGauge = {
+    $script:gauge = if ($d.MeterOpt.IsChecked) { 'bar' } else { 'ring' }
+    Set-State @{ gauge = $script:gauge }
+    $script:barIntro = $true
+    & $syncGauge
+    Render
+  }
+  $d.RingOpt.add_Checked($setGauge); $d.MeterOpt.add_Checked($setGauge)
   $d.UsedOpt.add_Checked($setDisplay); $d.LeftOpt.add_Checked($setDisplay)
-  $d.NormalOpt.add_Checked($setLayout); $d.CompactOpt.add_Checked($setLayout)
+  $d.NormalOpt.add_Checked($setLayout); $d.CompactOpt.add_Checked($setLayout); $d.BarOpt.add_Checked($setLayout)
 
   # Mirrors the update state while the dialog is open.
   $sync = {
@@ -1316,17 +1880,89 @@ function Update-TrayText {
 }
 
 # Minimized keeps just the title bar on screen; the same button brings the limits back.
-function Set-Minimized([bool]$on) {
+# Minimizing folds the body up under the header (and restoring unfolds it) instead of snapping.
+function Set-Minimized([bool]$on, [switch]$Instant) {
   $script:minimized = $on
-  $ui.Body.Visibility = if ($on) { 'Collapsed' } else { 'Visible' }
   $ui.MinBtn.Content = if ($on) { [string][char]0x25A1 } else { [string][char]0x2013 }
   $ui.MinBtn.ToolTip = if ($on) { 'Restore' } else { 'Minimize' }
   Set-State @{ minimized = $on }
+  $body = $ui.Body
+  $hp = [System.Windows.FrameworkElement]::HeightProperty
+  $op = [System.Windows.UIElement]::OpacityProperty
+  if ($Instant -or -not $win.IsVisible) {
+    $body.BeginAnimation($hp, $null); $body.BeginAnimation($op, $null)
+    $body.Height = [double]::NaN; $body.Opacity = 1
+    $body.Visibility = if ($on) { 'Collapsed' } else { 'Visible' }
+    return
+  }
+  if ($on) {
+    $fold = New-Anim $body.ActualHeight 0 260 (New-Ease 'Cubic' 'EaseInOut')
+    $fold.add_Completed({
+      if ($script:minimized) {
+        $ui.Body.Visibility = 'Collapsed'
+        $ui.Body.BeginAnimation([System.Windows.FrameworkElement]::HeightProperty, $null)
+        $ui.Body.Height = [double]::NaN
+      }
+    })
+    $body.BeginAnimation($op, (New-Anim $body.Opacity 0 180 (New-Ease)))
+    $body.BeginAnimation($hp, $fold)
+  } else {
+    # The height it will need: measured at the panel's width, then unfolded up to it.
+    $from = if ($body.Visibility -eq 'Visible') { $body.ActualHeight } else { 0 }
+    $body.BeginAnimation($hp, $null)
+    $body.Height = [double]::NaN
+    $body.Visibility = 'Visible'
+    $body.Measure((New-Object System.Windows.Size $ui.Header.ActualWidth, ([double]::PositiveInfinity)))
+    $unfold = New-Anim $from $body.DesiredSize.Height 340 (New-Ease 'Back' 'EaseOut')
+    $unfold.EasingFunction.Amplitude = 0.25
+    $unfold.add_Completed({
+      if (-not $script:minimized) {
+        $ui.Body.BeginAnimation([System.Windows.FrameworkElement]::HeightProperty, $null)
+        $ui.Body.Height = [double]::NaN
+      }
+    })
+    $body.BeginAnimation($hp, $unfold)
+    $fade = New-Anim 0 1 260 (New-Ease)
+    $fade.BeginTime = [TimeSpan]::FromMilliseconds(80)
+    $body.Opacity = 0
+    $body.BeginAnimation($op, $fade)
+  }
 }
 
+# Opening: the widget fades in and settles from a little smaller. Closing: it shrinks a touch as it fades out.
+$win.Content.RenderTransformOrigin = '0.5,0.2'
+$win.Content.RenderTransform = New-Object System.Windows.Media.ScaleTransform 1, 1
+function Show-Widget {
+  $script:hiding = $false
+  $sc = $win.Content.RenderTransform
+  $win.Opacity = 0
+  $win.Show()
+  $win.BeginAnimation([System.Windows.Window]::OpacityProperty, (New-Anim 0 1 220 (New-Ease)))
+  foreach ($p in [System.Windows.Media.ScaleTransform]::ScaleXProperty, [System.Windows.Media.ScaleTransform]::ScaleYProperty) {
+    $sc.BeginAnimation($p, (New-Anim 0.92 1 380 (New-Ease 'Back' 'EaseOut')))
+  }
+}
+function Hide-Widget {
+  if ($script:hiding) { return }
+  $script:hiding = $true
+  $sc = $win.Content.RenderTransform
+  $out = New-Anim $win.Opacity 0 170 (New-Ease 'Cubic' 'EaseIn')
+  $out.add_Completed({
+    if ($script:hiding) {
+      $script:hiding = $false
+      $win.Hide()
+      $win.BeginAnimation([System.Windows.Window]::OpacityProperty, $null)
+      $win.Opacity = 1
+    }
+  })
+  foreach ($p in [System.Windows.Media.ScaleTransform]::ScaleXProperty, [System.Windows.Media.ScaleTransform]::ScaleYProperty) {
+    $sc.BeginAnimation($p, (New-Anim 1 0.94 170 (New-Ease 'Cubic' 'EaseIn')))
+  }
+  $win.BeginAnimation([System.Windows.Window]::OpacityProperty, $out)
+}
 function Toggle-Window {
-  if ($win.IsVisible) { $win.Hide(); Set-State @{ hidden = $true } }
-  else { $win.Show(); Set-State @{ hidden = $false } }
+  if ($win.IsVisible -and -not $script:hiding) { Hide-Widget; Set-State @{ hidden = $true } }
+  else { Show-Widget; Set-State @{ hidden = $false } }
 }
 
 function New-Shortcut([string]$path) {
@@ -1379,7 +2015,36 @@ $tray.ContextMenuStrip = $menu
 $tray.add_MouseClick({ param($s, $e) if ($e.Button -eq 'Left') { Toggle-Window } })
 
 # ---- events -------------------------------------------------------------------
-$ui.Header.add_MouseLeftButtonDown({ $win.DragMove(); Set-State @{ x = $win.Left; y = $win.Top } })
+$ui.Header.add_MouseLeftButtonDown({ $win.DragMove(); Save-Position })
+# The bar drags from anywhere but its buttons, and its menu is the tray's.
+$ui.BarFrame.add_MouseLeftButtonDown({ $win.DragMove(); Save-Position })
+$ui.BarFrame.add_MouseRightButtonUp({ $menu.Show([System.Windows.Forms.Cursor]::Position) })
+$ui.BarRefresh.add_Click({ Start-Refresh })
+$ui.BarGear.add_Click({ Show-Settings })
+$ui.BarFrame.add_MouseEnter({ $ui.BarTools.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim $ui.BarTools.Opacity 1 180 (New-Ease))) })
+$ui.BarFrame.add_MouseLeave({ $ui.BarTools.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim $ui.BarTools.Opacity 0.35 400 (New-Ease))) })
+# When the bar grows or shrinks, the edge nearer the screen's side stays put, so a bar docked right grows leftwards.
+# Whether a window this wide, at the current Left, sits on the right half of its monitor.
+function Test-RightHalf([double]$width) {
+  $scr = [System.Windows.Forms.Screen]::FromHandle((New-Object System.Windows.Interop.WindowInteropHelper $win).Handle).WorkingArea
+  $toPx = [System.Windows.PresentationSource]::FromVisual($win).CompositionTarget.TransformToDevice.M11
+  return ($win.Left + $width / 2) * $toPx -gt $scr.Left + $scr.Width / 2
+}
+# On the right half of the screen the widget keeps its right edge where it was put: the strip grows leftward as
+# accounts arrive, and switching layouts doesn't push it off the screen. Elsewhere it keeps its left edge.
+$script:anchorRight = if ($null -ne $state.right) { [double]$state.right } else { $null }
+function Save-Position {
+  $script:anchorRight = if (Test-RightHalf $win.ActualWidth) { $win.Left + $win.ActualWidth } else { $null }
+  Set-State @{ x = $win.Left; y = $win.Top; right = $script:anchorRight }
+}
+$win.add_SizeChanged({
+  param($s, $e)
+  if (-not $e.WidthChanged -or $null -eq $script:anchorRight) { return }
+  $win.Left = $script:anchorRight - $e.NewSize.Width
+  Set-State @{ x = $win.Left }
+})
+# Saved by an older version without the right edge: work it out once shown.
+if ($null -eq $state.right -and $null -ne $state.x) { $win.add_ContentRendered({ if ($null -eq $script:anchorRight) { Save-Position } }) }
 $ui.ModeBtn.add_Click({
   $script:display = if ($script:display -eq 'used') { 'remaining' } else { 'used' }
   Set-State @{ display = $script:display }
@@ -1420,8 +2085,9 @@ $ago.add_Tick({ if (-not $script:proc) { $ui.Updated.Text = Format-Ago $script:u
 $ago.Start()
 
 # Launching the widget always shows it; "hidden" only lasts for the running session.
-Set-Minimized ([bool]$state.minimized)
-$win.Show()
+Set-Minimized ([bool]$state.minimized) -Instant
+Set-LayoutFrame
+Show-Widget
 Set-State @{ hidden = $false }
 # Every start looks again for tools installed since; the refresh follows.
 Start-Detect
