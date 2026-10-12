@@ -12,6 +12,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 $RefreshMinutes = 5
 $StateDir = Join-Path $env:APPDATA 'usage-widget'
 $StatePath = Join-Path $StateDir 'widget.json'
+$ProviderNames = [ordered]@{ claude = 'Claude'; codex = 'Codex'; cursor = 'Cursor'; 'opencode-go' = 'OpenCode Go' }
 $Icons = @{ claude = [string][char]0x273B; codex = [string][char]0x25CE; cursor = [string][char]0x2B21; 'opencode-go' = [string][char]0x25A3 }
 
 # ---- single instance ----------------------------------------------------------
@@ -34,6 +35,8 @@ function Set-State([hashtable]$patch) {
 $state = Get-State
 $script:display = if ($state.display) { $state.display } else { 'used' }
 $script:layout = if ($state.layout -eq 'compact') { 'compact' } else { 'normal' }
+# Providers switched off in settings: not fetched and not shown. Every provider is on by default.
+$script:hiddenProviders = @($state.hiddenProviders | Where-Object { $_ })
 
 # ---- theme (follows Windows light/dark) ---------------------------------------
 $light = $false
@@ -78,7 +81,7 @@ function Brush([string]$hex) { [System.Windows.Media.BrushConverter]::new().Conv
   <Border Margin="8" Background="$($C.Bg)" BorderBrush="$($C.Border)" BorderThickness="1" CornerRadius="12" Padding="14,10,14,10">
     <Border.Effect><DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.35"/></Border.Effect>
     <StackPanel>
-      <DockPanel x:Name="Header" Background="Transparent" Margin="0,0,0,8">
+      <DockPanel x:Name="Header" Background="Transparent">
         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
           <Button x:Name="GearBtn" Style="{StaticResource Btn}" ToolTip="Settings">
             <Grid>
@@ -90,26 +93,29 @@ function Brush([string]$hex) { [System.Windows.Media.BrushConverter]::new().Conv
           <Button x:Name="AddBtn" Style="{StaticResource Btn}" ToolTip="Add account">+</Button>
           <Button x:Name="ModeBtn" Style="{StaticResource Btn}" ToolTip="Used / left">Used</Button>
           <Button x:Name="RefreshBtn" Style="{StaticResource Btn}" ToolTip="Refresh">&#x27F3;</Button>
+          <Button x:Name="MinBtn" Style="{StaticResource Btn}" ToolTip="Minimize">&#x2013;</Button>
           <Button x:Name="HideBtn" Style="{StaticResource Btn}" ToolTip="Hide (tray icon brings it back)">&#x2715;</Button>
         </StackPanel>
         <TextBlock VerticalAlignment="Center" FontWeight="SemiBold">
           <Run Foreground="$($C.Muted)">&#x25F7;</Run> OpenUsage
         </TextBlock>
       </DockPanel>
-      <Border Height="1" Background="$($C.Divider)" Margin="0,0,0,8"/>
-      <StackPanel x:Name="List"/>
-      <Border Height="1" Background="$($C.Divider)" Margin="0,10,0,6"/>
-      <DockPanel>
-        <TextBlock x:Name="ErrorText" DockPanel.Dock="Right" Foreground="$($C.Error)" FontSize="11.5"/>
-        <TextBlock x:Name="Updated" Foreground="$($C.Muted)" FontSize="11.5"/>
-      </DockPanel>
+      <StackPanel x:Name="Body">
+        <Border Height="1" Background="$($C.Divider)" Margin="0,8,0,8"/>
+        <StackPanel x:Name="List"/>
+        <Border Height="1" Background="$($C.Divider)" Margin="0,10,0,6"/>
+        <DockPanel>
+          <TextBlock x:Name="ErrorText" DockPanel.Dock="Right" Foreground="$($C.Error)" FontSize="11.5"/>
+          <TextBlock x:Name="Updated" Foreground="$($C.Muted)" FontSize="11.5"/>
+        </DockPanel>
+      </StackPanel>
     </StackPanel>
   </Border>
 </Window>
 "@
 $win = [Windows.Markup.XamlReader]::Load([System.Xml.XmlNodeReader]::new($xaml))
 $ui = @{}
-foreach ($n in 'Header', 'GearBtn', 'GearDot', 'AddBtn', 'ModeBtn', 'RefreshBtn', 'HideBtn', 'List', 'Updated', 'ErrorText') { $ui[$n] = $win.FindName($n) }
+foreach ($n in 'Header', 'GearBtn', 'GearDot', 'AddBtn', 'ModeBtn', 'RefreshBtn', 'MinBtn', 'HideBtn', 'Body', 'List', 'Updated', 'ErrorText') { $ui[$n] = $win.FindName($n) }
 
 $area = [System.Windows.SystemParameters]::WorkArea
 $win.Left = if ($null -ne $state.x) { [double]$state.x } else { $area.Right - 330 }
@@ -175,6 +181,7 @@ $script:proc = $null
 # In compact mode a provider with no account at all (never signed in, no key, nothing to show) gets no card;
 # the normal layout keeps it, with the hint on how to sign in.
 function Test-Shown($u) {
+  if ($script:hiddenProviders -contains $u.id) { return $false }
   if ($script:layout -ne 'compact') { return $true }
   return $u.account -or @($u.windows).Count -or @($u.extras).Count -or -not $u.error
 }
@@ -534,7 +541,8 @@ function Start-Refresh {
   if ($script:proc) { return }
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = 'node'
-  $psi.Arguments = '--experimental-strip-types --no-warnings "' + (Join-Path $Root 'scripts\usage-json.ts') + '"'
+  $ids = @($ProviderNames.Keys | Where-Object { $script:hiddenProviders -notcontains $_ })
+  $psi.Arguments = '--experimental-strip-types --no-warnings "' + (Join-Path $Root 'scripts\usage-json.ts') + '" ' + ($ids -join ' ')
   $psi.WorkingDirectory = $Root
   $psi.UseShellExecute = $false
   $psi.CreateNoWindow = $true
@@ -700,6 +708,27 @@ function New-DialogXaml([string]$title, [string]$heading, [string]$body, [int]$w
                 <Setter Property="Foreground" Value="$($C.Bg)"/>
                 <Setter Property="FontWeight" Value="SemiBold"/>
               </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Switch" TargetType="CheckBox">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <Border x:Name="track" Width="34" Height="18" CornerRadius="9" Background="$($C.Track)">
+              <Ellipse x:Name="thumb" Width="12" Height="12" Margin="3,0" HorizontalAlignment="Left" Fill="$($C.Muted)"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="track" Property="Background" Value="$($C.Text)"/>
+                <Setter TargetName="thumb" Property="Fill" Value="$($C.Bg)"/>
+                <Setter TargetName="thumb" Property="HorizontalAlignment" Value="Right"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="track" Property="Opacity" Value="0.85"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="track" Property="Opacity" Value="0.4"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -890,8 +919,18 @@ function Restart-Widget {
 }
 
 # ---- settings -----------------------------------------------------------------
+function Get-SwitchName([string]$id) { 'Prov_' + ($id -replace '\W', '_') }
+
 function Show-Settings {
   $iconUri = (Join-Path $Root 'docs\icon.png') -replace '&', '&amp;'
+  $providerRows = foreach ($id in $ProviderNames.Keys) {
+    @"
+      <DockPanel Margin="0,0,0,8">
+        <CheckBox x:Name="$(Get-SwitchName $id)" DockPanel.Dock="Right" Style="{StaticResource Switch}" Tag="$id" AutomationProperties.Name="Show $($ProviderNames[$id])" VerticalAlignment="Center"/>
+        <TextBlock VerticalAlignment="Center"><Run Foreground="$($Accents[$id])">$($Icons[$id])</Run>  $($ProviderNames[$id])</TextBlock>
+      </DockPanel>
+"@
+  }
   $body = @"
       <TextBlock Style="{StaticResource Caption}" Text="DISPLAY"/>
       <DockPanel Margin="0,0,0,8">
@@ -919,6 +958,9 @@ function Show-Settings {
         </StackPanel>
       </DockPanel>
       <Border Height="1" Background="$($C.Divider)" Margin="0,16,0,14"/>
+      <TextBlock Style="{StaticResource Caption}" Text="PROVIDERS"/>
+$($providerRows -join "`n")
+      <Border Height="1" Background="$($C.Divider)" Margin="0,8,0,14"/>
       <TextBlock Style="{StaticResource Caption}" Text="ABOUT"/>
       <DockPanel>
         <Image DockPanel.Dock="Left" Source="$iconUri" Width="40" Height="40" Margin="0,0,12,0" RenderOptions.BitmapScalingMode="HighQuality"/>
@@ -942,6 +984,22 @@ function Show-Settings {
   $d = New-Dialog (New-DialogXaml 'OpenUsage settings' $heading $body 380) @(
     'UsedOpt', 'LeftOpt', 'NormalOpt', 'CompactOpt', 'VersionText', 'StatusDot', 'StatusText', 'CheckBtn', 'UpdateBtn')
   $dlg = $d.Window
+
+  # One switch per provider; the last one left on can't be switched off, so the widget is never empty.
+  $switches = @(foreach ($id in $ProviderNames.Keys) { $dlg.FindName((Get-SwitchName $id)) })
+  $syncSwitches = { foreach ($sw in $switches) { $sw.IsEnabled = -not $sw.IsChecked -or @($switches | Where-Object { $_.IsChecked }).Count -gt 1 } }
+  foreach ($sw in $switches) { $sw.IsChecked = $script:hiddenProviders -notcontains $sw.Tag }
+  & $syncSwitches
+  $setProvider = {
+    param($s)
+    $script:hiddenProviders = @($switches | Where-Object { -not $_.IsChecked } | ForEach-Object { [string]$_.Tag })
+    Set-State @{ hiddenProviders = $script:hiddenProviders }
+    & $syncSwitches
+    Render
+    # A provider switched back on has nothing cached: fetch it.
+    if ($s.IsChecked) { if ($script:proc) { $script:refreshPending = $true } else { Start-Refresh } }
+  }
+  foreach ($sw in $switches) { $sw.add_Checked($setProvider); $sw.add_Unchecked($setProvider) }
 
   $d.UsedOpt.IsChecked = $script:display -eq 'used'
   $d.LeftOpt.IsChecked = $script:display -ne 'used'
@@ -989,10 +1047,19 @@ $tray.Visible = $true
 
 function Update-TrayText {
   $parts = foreach ($u in $script:data) {
-    if ($u.windows.Count) { "{0} {1}%" -f $u.name, [math]::Round(($u.windows | Measure-Object usedPct -Maximum).Maximum) }
+    if ($u.windows.Count -and $script:hiddenProviders -notcontains $u.id) { "{0} {1}%" -f $u.name, [math]::Round(($u.windows | Measure-Object usedPct -Maximum).Maximum) }
   }
   $text = if ($parts) { 'OpenUsage - ' + ($parts -join ' | ') } else { 'OpenUsage' }
   $tray.Text = $text.Substring(0, [math]::Min(63, $text.Length))
+}
+
+# Minimized keeps just the title bar on screen; the same button brings the limits back.
+function Set-Minimized([bool]$on) {
+  $script:minimized = $on
+  $ui.Body.Visibility = if ($on) { 'Collapsed' } else { 'Visible' }
+  $ui.MinBtn.Content = if ($on) { [string][char]0x25A1 } else { [string][char]0x2013 }
+  $ui.MinBtn.ToolTip = if ($on) { 'Restore' } else { 'Minimize' }
+  Set-State @{ minimized = $on }
 }
 
 function Toggle-Window {
@@ -1059,6 +1126,7 @@ $ui.ModeBtn.add_Click({
 $ui.GearBtn.add_Click({ Show-Settings })
 $ui.AddBtn.add_Click({ $addMenu.IsOpen = $true })
 $ui.RefreshBtn.add_Click({ Start-Refresh })
+$ui.MinBtn.add_Click({ Set-Minimized (-not $script:minimized) })
 $ui.HideBtn.add_Click({ Toggle-Window })
 $win.add_Closing({ param($s, $e) if (-not $script:quitting) { $e.Cancel = $true; Toggle-Window } })
 $win.add_Closed({ $tray.Visible = $false; $tray.Dispose(); [System.Windows.Threading.Dispatcher]::CurrentDispatcher.InvokeShutdown() })
@@ -1088,6 +1156,7 @@ $ago.add_Tick({ if (-not $script:proc) { $ui.Updated.Text = Format-Ago $script:u
 $ago.Start()
 
 # Launching the widget always shows it; "hidden" only lasts for the running session.
+Set-Minimized ([bool]$state.minimized)
 $win.Show()
 Set-State @{ hidden = $false }
 Start-Refresh

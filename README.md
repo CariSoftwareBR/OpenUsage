@@ -243,6 +243,7 @@ As on the other systems, a provider with an `"error"` field only means the user 
 | **+** | Adds another Claude or Codex account (see [Multiple accounts](#multiple-accounts)). |
 | **Used / Left** | Flips every number between used and left. |
 | **⟳** | Refreshes now (it also refreshes every 5 minutes). |
+| **–** | Minimizes the widget to its title bar, still on screen; **□** brings the limits back (Windows). |
 | **✕** | Hides the widget; the tray / menu bar icon brings it back. On Linux without a tray, it minimizes instead. |
 
 ### Reading the compact layout
@@ -265,6 +266,7 @@ Hover a line to see every limit with its reset time, the plan and any error.
 
 - **Numbers:** **Used** or **Left**, the default for every limit.
 - **Layout:** **Compact** (a card per provider, a line per account: the ring, the plan and next reset, then the 5h / weekly numbers) or **Normal** (a card per account with a bar per limit). Compact leaves out providers you are not signed in to; Normal keeps them with a hint on how to sign in. A used-up limit is always a full red ring, even when showing what is left.
+- **Providers (Windows):** a switch per provider. All are on by default; switch one off and it is no longer fetched or shown. The last one left on can't be switched off.
 - **About:** the version and commit in use. The widget looks for a new version when it starts and once a day. **Update now** pulls it (`git pull --ff-only`) and restarts the widget; on macOS the app is rebuilt first. A copy installed from the ZIP (without Git) can't update itself: download it again.
 
 <details>
