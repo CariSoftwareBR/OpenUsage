@@ -6,7 +6,7 @@
 
 **All your AI coding plan limits in one tiny floating widget.**
 
-Claude · Codex · Cursor · OpenCode Go
+Claude · Codex · Copilot · Cursor · Kilo · OpenCode Go
 
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows&logoColor=white)](#windows)
 [![macOS](https://img.shields.io/badge/macOS-12%2B-000000?logo=apple&logoColor=white)](#macos)
@@ -266,7 +266,7 @@ Hover a line to see every limit with its reset time, the plan and any error.
 
 - **Numbers:** **Used** or **Left**, the default for every limit.
 - **Layout:** **Compact** (a card per provider, a line per account: the ring, the plan and next reset, then the 5h / weekly numbers) or **Normal** (a card per account with a bar per limit). Compact leaves out providers you are not signed in to; Normal keeps them with a hint on how to sign in. A used-up limit is always a full red ring, even when showing what is left.
-- **Providers (Windows):** a switch per provider. All are on by default; switch one off and it is no longer fetched or shown. The last one left on can't be switched off.
+- **Providers (Windows):** a switch per provider. The first time, only the tools found on the PC are on; each start looks again and turns on any tool installed since, while one you switched off stays off. Switch any of them on or off by hand; one switched off is no longer fetched or shown. The last one left on can't be switched off. (On macOS and Linux the widget shows the tools it finds.)
 - **About:** the version and commit in use. The widget looks for a new version when it starts and once a day. **Update now** pulls it (`git pull --ff-only`) and restarts the widget; on macOS the app is rebuilt first. A copy installed from the ZIP (without Git) can't update itself: download it again.
 
 <details>
@@ -314,7 +314,9 @@ The widget only **reads** credentials the tools themselves already saved on your
 |---|---|---|
 | Claude | `~/.claude/.credentials.json` (or `CLAUDE_CONFIG_DIR`); on macOS, the Keychain item Claude Code saves | Open Claude Code and sign in. Token expired: open Claude Code once to renew it. |
 | Codex | `~/.codex/auth.json` (or `CODEX_HOME`); offline, falls back to the latest session log | Sign in to Codex with your ChatGPT account. API-key logins have no plan limits. |
+| Copilot | The sign-in of the Copilot editor plugins (`apps.json` in `%LOCALAPPDATA%\github-copilot` or `~/.config/github-copilot`), else the GitHub CLI (`gh auth token`) | Run `gh auth login`. The monthly premium requests are shown; on the Free plan, chat and completions. |
 | Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` on macOS, or `~/.config/Cursor/User/globalStorage/state.vscdb` on Linux | Open Cursor and sign in. |
+| Kilo | The Kilo account saved by `kilo auth login` (`~/.local/share/kilo/auth.json`) | Run `kilo auth login` with your Kilo account. Shows the credit balance and, with Kilo Pass, the month's usage. |
 | OpenCode Go | `OPENCODE_GO_API_KEY`, or the key saved by opencode's `/connect` | Run `/connect` in opencode and pick OpenCode Go. |
 
 ### Multiple accounts

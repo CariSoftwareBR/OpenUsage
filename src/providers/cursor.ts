@@ -95,4 +95,5 @@ export const cursor: Provider = {
     } satisfies ProviderUsage
   },
   account: () => readStateValue("cursorAuth/cachedEmail"),
+  detect: async () => existsSync(dbPath()),
 }

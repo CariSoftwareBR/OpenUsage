@@ -62,4 +62,5 @@ export const opencodeGo: Provider = {
     if (!windows.length) throw new ProviderError("OpenCode Go: no usage data")
     return { id: "opencode-go", name: "OpenCode Go", plan: "go", windows, extras: [], fetchedAt: Date.now() } satisfies ProviderUsage
   },
+  detect: () => readKey().then(() => true, () => false),
 }

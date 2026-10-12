@@ -12,8 +12,8 @@ $Root = Split-Path -Parent $PSScriptRoot
 $RefreshMinutes = 5
 $StateDir = Join-Path $env:APPDATA 'usage-widget'
 $StatePath = Join-Path $StateDir 'widget.json'
-$ProviderNames = [ordered]@{ claude = 'Claude'; codex = 'Codex'; cursor = 'Cursor'; 'opencode-go' = 'OpenCode Go' }
-$Icons = @{ claude = [string][char]0x273B; codex = [string][char]0x25CE; cursor = [string][char]0x2B21; 'opencode-go' = [string][char]0x25A3 }
+$ProviderNames = [ordered]@{ claude = 'Claude'; codex = 'Codex'; copilot = 'Copilot'; cursor = 'Cursor'; kilo = 'Kilo'; 'opencode-go' = 'OpenCode Go' }
+$Icons = @{ claude = [string][char]0x273B; codex = [string][char]0x25CE; copilot = [string][char]0x25C8; cursor = [string][char]0x2B21; kilo = [string][char]0x25C6; 'opencode-go' = [string][char]0x25A3 }
 
 # ---- single instance ----------------------------------------------------------
 $mutex = New-Object System.Threading.Mutex($false, 'Local\usage-widget')
@@ -35,8 +35,10 @@ function Set-State([hashtable]$patch) {
 $state = Get-State
 $script:display = if ($state.display) { $state.display } else { 'used' }
 $script:layout = if ($state.layout -eq 'compact') { 'compact' } else { 'normal' }
-# Providers switched off in settings: not fetched and not shown. Every provider is on by default.
+# Providers switched off: not fetched and not shown. At the first start only the ones set up on this PC are on;
+# "seen" remembers which were found, so one installed later turns on by itself and one switched off stays off.
 $script:hiddenProviders = @($state.hiddenProviders | Where-Object { $_ })
+$script:seenProviders = if ($null -ne $state.seenProviders) { @($state.seenProviders | Where-Object { $_ }) } else { $null }
 
 # ---- theme (follows Windows light/dark) ---------------------------------------
 $light = $false
@@ -46,7 +48,7 @@ $C = if ($light) {
 } else {
   @{ Bg = '#1C1A19'; Border = '#34302D'; Divider = '#2C2926'; Text = '#EBE7E2'; Muted = '#8D8680'; Warn = '#E8953F'; Error = '#E5584F'; Ok = '#5BBF86'; Track = '#35302C'; Hover = '#2A2725'; Card = '#242120'; CardBorder = '#2E2A27' }
 }
-$Accents = @{ claude = '#D97757'; codex = $(if ($light) { '#0F8A6C' } else { '#3DBE9C' }); cursor = $C.Text; 'opencode-go' = $C.Text }
+$Accents = @{ claude = '#D97757'; codex = $(if ($light) { '#0F8A6C' } else { '#3DBE9C' }); copilot = $(if ($light) { '#8250DF' } else { '#A371F7' }); cursor = $C.Text; kilo = $(if ($light) { '#A68A00' } else { '#F2D33C' }); 'opencode-go' = $C.Text }
 function Brush([string]$hex) { [System.Windows.Media.BrushConverter]::new().ConvertFromString($hex) }
 
 # ---- window -------------------------------------------------------------------
@@ -172,7 +174,8 @@ $script:data = @()
 $script:updatedAt = $null
 try {
   $cache = Get-Content $CachePath -Raw | ConvertFrom-Json
-  $script:data = @($cache.data)
+  # Windows PowerShell reads an empty JSON array as one $null.
+  $script:data = @($cache.data | Where-Object { $_ })
   $script:updatedAt = $cache.updatedAt
 } catch {}
 $script:lastError = ''
@@ -190,7 +193,9 @@ function Render {
   $ui.List.Children.Clear()
   $script:shown = @($script:data | Where-Object { Test-Shown $_ })
   if (-not $script:shown.Count) {
-    $msg = if ($script:proc) { 'Loading...' } else { 'No data' }
+    $msg = if ($script:proc -or $script:detectProc) { 'Loading...' }
+      elseif (-not @($ProviderNames.Keys | Where-Object { $script:hiddenProviders -notcontains $_ }).Count) { "No AI tool found on this PC. Turn one on in settings ($([char]0x2699))." }
+      else { 'No data' }
     $ui.List.Children.Add((New-Text $msg $C.Muted)) | Out-Null
   }
   if ($script:layout -eq 'compact') { Render-Compact } else { Render-Normal }
@@ -370,7 +375,8 @@ function New-Ring($u, [double]$size = 42) {
     $g.Children.Add((New-Arc $d $t (Get-ArcPct $slots.short.usedPct) $(if ($lv) { $lv } else { $C.Text }) "$key|short")) | Out-Null
   }
   if (-not $slots.short -and -not $slots.long) {
-    $x = New-Text '!' $C.Warn 13 'SemiBold'
+    # Only a balance (credits, say) and nothing wrong: a "$" rather than the warning mark.
+    $x = if (@($u.extras).Count -and -not $u.error) { New-Text '$' $C.Muted 13 'SemiBold' } else { New-Text '!' $C.Warn 13 'SemiBold' }
     $x.HorizontalAlignment = 'Center'; $x.VerticalAlignment = 'Center'
     $g.Children.Add($x) | Out-Null
   }
@@ -493,6 +499,17 @@ function New-AccountRow($u) {
     $nums.Children.Add($val) | Out-Null
     $i++
   }
+  # No limit to show: the first extra (a credit balance) takes the numbers' place.
+  if (-not $i -and @($u.extras).Count) {
+    $x = @($u.extras)[0]
+    $lbl = New-Text ([string]$x.label).ToLower() $C.Muted 11.5
+    $lbl.VerticalAlignment = 'Center'
+    $lbl.Margin = '0,0,8,0'
+    $val = New-Text ([string]$x.value) $C.Text 13 'SemiBold'
+    [System.Windows.Controls.Grid]::SetColumn($val, 1)
+    $nums.Children.Add($lbl) | Out-Null
+    $nums.Children.Add($val) | Out-Null
+  }
   $grid.Children.Add($nums) | Out-Null
   $row.Child = $grid
   return $row
@@ -538,10 +555,13 @@ function Render-Compact {
 }
 
 function Start-Refresh {
-  if ($script:proc) { return }
+  # While the providers are being detected the switches aren't settled yet; detection refreshes when done.
+  if ($script:proc -or $script:detectProc) { return }
+  $ids = @($ProviderNames.Keys | Where-Object { $script:hiddenProviders -notcontains $_ })
+  # Nothing switched on: no ids would mean "whatever is set up" to the script, so don't ask at all.
+  if (-not $ids.Count) { $script:data = @(); Render; return }
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = 'node'
-  $ids = @($ProviderNames.Keys | Where-Object { $script:hiddenProviders -notcontains $_ })
   $psi.Arguments = '--experimental-strip-types --no-warnings "' + (Join-Path $Root 'scripts\usage-json.ts') + '" ' + ($ids -join ' ')
   $psi.WorkingDirectory = $Root
   $psi.UseShellExecute = $false
@@ -562,6 +582,47 @@ function Start-Refresh {
   Render
 }
 
+# Asks which providers are set up on this PC (local files only, no network), then refreshes.
+function Start-Detect {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = 'node'
+  $psi.Arguments = '--experimental-strip-types --no-warnings "' + (Join-Path $Root 'scripts\usage-json.ts') + '" --detect'
+  $psi.WorkingDirectory = $Root
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  try {
+    $script:detectProc = [System.Diagnostics.Process]::Start($psi)
+    $script:detectOut = $script:detectProc.StandardOutput.ReadToEndAsync()
+  } catch {
+    $script:detectProc = $null
+    Start-Refresh
+  }
+}
+
+function Complete-Detect {
+  $p = $script:detectProc
+  if (-not $p -or -not $p.HasExited) { return }
+  $script:detectProc = $null
+  try {
+    # A run that failed (or printed nothing) found nothing out: leave the switches as they are.
+    if ($p.ExitCode -ne 0 -or -not $script:detectOut.Result.Trim()) { throw 'detect failed' }
+    $found = @($script:detectOut.Result | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $_ })
+    $all = @($ProviderNames.Keys)
+    if ($null -eq $script:seenProviders) {
+      $script:hiddenProviders = @($all | Where-Object { $found -notcontains $_ })
+      $script:seenProviders = $found
+    } else {
+      $new = @($found | Where-Object { $script:seenProviders -notcontains $_ })
+      $script:hiddenProviders = @($script:hiddenProviders | Where-Object { $new -notcontains $_ })
+      $script:seenProviders = @($script:seenProviders) + $new
+    }
+    Set-State @{ hiddenProviders = $script:hiddenProviders; seenProviders = $script:seenProviders }
+  } catch {}
+  if ($script:proc) { $script:refreshPending = $true } else { Start-Refresh }
+}
+
 function Complete-Refresh {
   $p = $script:proc
   if (-not $p) { return }
@@ -572,7 +633,10 @@ function Complete-Refresh {
   $script:proc = $null
   try {
     # Windows PowerShell's ConvertFrom-Json emits a JSON array as one object; ForEach-Object unrolls it.
-    $fresh = @($script:outTask.Result | ConvertFrom-Json | ForEach-Object { $_ })
+    # No output or a failed run (a script that doesn't load, say) is a failed refresh, not "no providers":
+    # keep the numbers on screen and in the cache.
+    if ($p.ExitCode -ne 0 -or -not $script:outTask.Result.Trim()) { throw 'usage script failed' }
+    $fresh = @($script:outTask.Result | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $_ })
     # A transient provider failure keeps the last good numbers, flagged as stale.
     # Keyed per account (key), falling back to id for caches written before multi-account support.
     $prev = @{}
@@ -1136,6 +1200,7 @@ $poll = New-Object System.Windows.Threading.DispatcherTimer
 $poll.Interval = [TimeSpan]::FromMilliseconds(400)
 $poll.add_Tick({
   if ($showEvent.WaitOne(0) -and -not $win.IsVisible) { Toggle-Window }
+  Complete-Detect
   Complete-Refresh
   Complete-Logins
   Complete-Update
@@ -1159,7 +1224,9 @@ $ago.Start()
 Set-Minimized ([bool]$state.minimized)
 $win.Show()
 Set-State @{ hidden = $false }
-Start-Refresh
+# Every start looks again for tools installed since; the refresh follows.
+Start-Detect
+Render
 Start-Update 'check'
 [System.Windows.Threading.Dispatcher]::Run()
 $mutex.ReleaseMutex()

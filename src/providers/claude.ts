@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
@@ -97,4 +98,6 @@ export const claude: Provider = {
   },
   // Another account lives in its own folder, e.g. ".claude-2", signed in with CLAUDE_CONFIG_DIR.
   profiles: () => siblingProfiles(configDir(), ".claude", ".claude.json"),
+  // Claude Code creates its config folder on first run; an extra account alone counts too.
+  detect: async () => existsSync(configDir()) || (await siblingProfiles(configDir(), ".claude", ".claude.json")).length > 0,
 }

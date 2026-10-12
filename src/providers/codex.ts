@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { readdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -138,4 +139,5 @@ export const codex: Provider = {
   },
   // Another account lives in its own folder, e.g. ".codex-2", signed in with CODEX_HOME.
   profiles: () => siblingProfiles(home(), ".codex", "auth.json"),
+  detect: async () => existsSync(join(home(), "auth.json")) || (await siblingProfiles(home(), ".codex", "auth.json")).length > 0,
 }

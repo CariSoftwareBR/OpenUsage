@@ -44,7 +44,7 @@ REFRESH_MINUTES = 5
 APP_ID = "com.openusage.widget"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON_PATH = os.path.join(ROOT, "docs", "icon.png")
-ICONS = {"claude": "✻", "codex": "◎", "cursor": "⬡", "opencode-go": "▣"}
+ICONS = {"claude": "✻", "codex": "◎", "copilot": "◈", "cursor": "⬡", "kilo": "◆", "opencode-go": "▣"}
 
 HOME = os.path.expanduser("~")
 CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
@@ -171,6 +171,8 @@ LIGHT_DARK = {
     "ok": ("#2E8B57", "#5BBF86"),
     "claude": ("#D97757", "#D97757"),
     "codex": ("#0F8A6C", "#3DBE9C"),
+    "copilot": ("#8250DF", "#A371F7"),
+    "kilo": ("#A68A00", "#F2D33C"),
 }
 
 C = {}

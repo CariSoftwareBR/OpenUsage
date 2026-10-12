@@ -1,4 +1,4 @@
-export type ProviderId = "claude" | "codex" | "cursor" | "opencode-go"
+export type ProviderId = "claude" | "codex" | "copilot" | "cursor" | "kilo" | "opencode-go"
 
 /** One rate-limit window, e.g. Claude "5-Hour". */
 export interface UsageWindow {
@@ -40,6 +40,8 @@ export interface Provider {
   account?(profile?: string): Promise<string | undefined>
   /** Config folders of extra accounts, besides the default one. */
   profiles?(): Promise<string[]>
+  /** Whether the tool is set up on this machine, from local files only: the widget shows the ones it finds. */
+  detect(): Promise<boolean>
 }
 
 export class ProviderError extends Error {}

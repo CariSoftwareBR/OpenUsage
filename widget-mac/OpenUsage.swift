@@ -9,7 +9,7 @@ import SwiftUI
 let refreshMinutes = 5.0
 let bundleId = "com.openusage.widget"
 let showNotification = Notification.Name("com.openusage.widget.show")
-let icons = ["claude": "\u{273B}", "codex": "\u{25CE}", "cursor": "\u{2B21}", "opencode-go": "\u{25A3}"]
+let icons = ["claude": "\u{273B}", "codex": "\u{25CE}", "copilot": "\u{25C8}", "cursor": "\u{2B21}", "kilo": "\u{25C6}", "opencode-go": "\u{25A3}"]
 
 // ---- data ----------------------------------------------------------------------
 
@@ -264,7 +264,7 @@ enum C {
   static let ok = themed(0x2E8B57, 0x5BBF86)
 }
 
-let accents: [String: Color] = ["claude": themed(0xD97757, 0xD97757), "codex": themed(0x0F8A6C, 0x3DBE9C)]
+let accents: [String: Color] = ["claude": themed(0xD97757, 0xD97757), "codex": themed(0x0F8A6C, 0x3DBE9C), "copilot": themed(0x8250DF, 0xA371F7), "kilo": themed(0xA68A00, 0xF2D33C)]
 
 func level(_ pct: Double) -> Color? { pct >= 80 ? C.error : pct >= 50 ? C.warn : nil }
 
