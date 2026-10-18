@@ -46,11 +46,11 @@ $dir = Join-Path $env:LOCALAPPDATA 'OpenUsage'
 if (Test-Path (Join-Path $dir '.git')) {
   git -C $dir pull --ff-only
 } elseif (Get-Command git -ErrorAction SilentlyContinue) {
-  git clone https://github.com/paulocarinhena/OpenUsage.git $dir
+  git clone https://github.com/CariSoftwareBR/OpenUsage.git $dir
 } else {
   # No Git: download the main branch as a ZIP
   $zip = Join-Path $env:TEMP 'OpenUsage.zip'
-  Invoke-WebRequest https://github.com/paulocarinhena/OpenUsage/archive/refs/heads/main.zip -OutFile $zip
+  Invoke-WebRequest https://github.com/CariSoftwareBR/OpenUsage/archive/refs/heads/main.zip -OutFile $zip
   Expand-Archive $zip $env:TEMP -Force
   if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
   Move-Item (Join-Path $env:TEMP 'OpenUsage-main') $dir
@@ -101,7 +101,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue) -or [version]((node -v
 }
 # Close a running widget, so an update starts on the new version.
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*usage-widget.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
-if (Test-Path (Join-Path $dir '.git')) { git -C $dir pull --ff-only } else { git clone https://github.com/paulocarinhena/OpenUsage.git $dir }
+if (Test-Path (Join-Path $dir '.git')) { git -C $dir pull --ff-only } else { git clone https://github.com/CariSoftwareBR/OpenUsage.git $dir }
 $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'OpenUsage.lnk'))
 $lnk.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
 $lnk.Arguments = "`"$dir\widget\usage-widget.vbs`""
@@ -132,7 +132,7 @@ Always use `~/Library/Application Support/OpenUsage`: the app reads the scripts 
 
 ```bash
 dir="$HOME/Library/Application Support/OpenUsage"
-if [ -d "$dir/.git" ]; then git -C "$dir" pull --ff-only; else git clone https://github.com/paulocarinhena/OpenUsage.git "$dir"; fi
+if [ -d "$dir/.git" ]; then git -C "$dir" pull --ff-only; else git clone https://github.com/CariSoftwareBR/OpenUsage.git "$dir"; fi
 "$dir/widget-mac/build.sh"
 open "$HOME/Applications/OpenUsage.app"
 ```
@@ -169,7 +169,7 @@ Always use `~/.local/share/OpenUsage`: the app menu entry points into it.
 ```bash
 dir="$HOME/.local/share/OpenUsage"
 pkill -f 'widget-linux/openusage.py' || true   # an open widget keeps running the old version
-if [ -d "$dir/.git" ]; then git -C "$dir" pull --ff-only; else git clone https://github.com/paulocarinhena/OpenUsage.git "$dir"; fi
+if [ -d "$dir/.git" ]; then git -C "$dir" pull --ff-only; else git clone https://github.com/CariSoftwareBR/OpenUsage.git "$dir"; fi
 "$dir/widget-linux/install.sh"
 ```
 

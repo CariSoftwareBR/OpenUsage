@@ -9,7 +9,7 @@
 [![macOS](https://img.shields.io/badge/macOS-12%2B-000000?style=for-the-badge&logo=apple&logoColor=white)](Installation.md#macos)
 [![Linux](https://img.shields.io/badge/Linux-GTK%203-FCC624?style=for-the-badge&logo=linux&logoColor=black)](Installation.md#linux)
 <br>
-[![Version](https://img.shields.io/github/v/tag/paulocarinhena/OpenUsage?style=flat-square&label=version&color=D97757)](https://github.com/paulocarinhena/OpenUsage/tags)
+[![Version](https://img.shields.io/github/v/tag/CariSoftwareBR/OpenUsage?style=flat-square&label=version&color=D97757)](https://github.com/CariSoftwareBR/OpenUsage/tags)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-818CF8?style=flat-square)](LICENSE)
 
 </div>
@@ -25,7 +25,7 @@
 **Ask your agent:**
 
 ```text
-Install this plugin: https://github.com/paulocarinhena/OpenUsage
+Install this plugin: https://github.com/CariSoftwareBR/OpenUsage
 ```
 
 <p align="center"><sub>Rather do it by hand? <a href="Installation.md"><b>Installation.md</b></a> has every step for Windows, macOS and Linux.</sub></p>
