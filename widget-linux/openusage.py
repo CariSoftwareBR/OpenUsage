@@ -1389,15 +1389,13 @@ class Floating(Gtk.Window):
         self.frame.set_size_request(width, -1)
         self.width = width
         self.strip = False
-        # While a refresh runs, a soft light sweeps across the frame.
-        self.shine = Gtk.DrawingArea()
-        self.shine.connect("draw", self.draw_shine)
+        # While a refresh runs, a soft light sweeps across the frame. Painted after the frame's children rather than
+        # as an overlay: an overlay child gets its own input window, and on X11 it swallowed every click.
+        self.shine = vbox()
+        self.shine.pack_start(self.frame, True, True, 0)
+        self.shine.connect_after("draw", self.draw_shine)
         self.shining, self.shine_alpha, self.shine_t0, self.shine_tick = False, 0.0, time.monotonic(), None
-        overlay = Gtk.Overlay()
-        overlay.add(self.frame)
-        overlay.add_overlay(self.shine)
-        overlay.set_overlay_pass_through(self.shine, True)
-        self.add(overlay)
+        self.add(self.shine)
 
     def set_strip(self, on):
         self.strip = on
