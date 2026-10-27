@@ -387,6 +387,14 @@ function Get-Shown([double]$used) { if ($script:display -eq 'used') { $used } el
 # How much of a ring to fill: the shown value, except that a used-up limit is always a full ring (in red).
 function Get-ArcPct([double]$used) { if ($used -ge 100) { 100 } else { Get-Shown $used } }
 
+# Used up and still waiting on its reset (a reset already past means the numbers are behind, not the limit).
+function Test-Out($w) { $w -and $w.usedPct -ge 100 -and $w.resetsAt -and [double]$w.resetsAt -gt [DateTimeOffset]::Now.ToUnixTimeMilliseconds() }
+
+# The used-up limit that frees up last (when you can work again), or nothing while every limit has room.
+function Get-Blocked($slots) {
+  @($slots.short, $slots.long) | Where-Object { Test-Out $_ } | Sort-Object { [double]$_.resetsAt } | Select-Object -Last 1
+}
+
 function Get-SlotName($w) {
   if (-not $w) { return '' }
   switch -Regex ($w.label) { 'Hour' { '5h' } 'Week|7-Day' { 'wk' } 'Month|Billing' { 'mo' } default { $w.label } }
@@ -849,6 +857,15 @@ function New-Meter($w, [string]$accent, [int]$index, [double]$len = 46) {
   $name.MinWidth = 16
   $name.VerticalAlignment = 'Center'
   $row.Children.Add($name) | Out-Null
+  # Used up: no bar, just when it comes back, in the room the bar and the number take.
+  if (Test-Out $w) {
+    $back = New-Text "$([char]0x21BB) $(Format-ResetShort $w.resetsAt)" $C.Error 11 'SemiBold'
+    $back.MinWidth = $len + 32
+    $back.Margin = '3,0,0,0'
+    $back.VerticalAlignment = 'Center'
+    $row.Children.Add($back) | Out-Null
+    return $row
+  }
   $track = New-Fill $used $color $index 5
   $track.Width = $len
   $track.VerticalAlignment = 'Center'
@@ -942,8 +959,15 @@ function New-BarChip($u, [int]$index) {
     $text.Children.Add((New-Text ([string]($u.name -replace ' \(.*\)$', '')) $C.Text 12 'SemiBold')) | Out-Null
     $sub = 'no data'
   }
+  $lv = if ($other) { Level $other.usedPct } else { $null }
+  # A used-up limit: the second line tells when it comes back instead.
+  $blocked = Get-Blocked $slots
+  if ($blocked) {
+    # Named when it isn't the limit on the line above.
+    $sub = "$(if ($blocked -ne $main) { (Get-SlotName $blocked) + ' ' })$([char]0x21BB) $(Format-ResetShort $blocked.resetsAt)"
+    $lv = $C.Error
+  }
   if ($sub) {
-    $lv = if ($other) { Level $other.usedPct } else { $null }
     $s2 = New-Text $sub $(if ($lv) { $lv } else { $C.Muted }) 10
     $s2.Margin = '0,-1,0,0'
     $text.Children.Add($s2) | Out-Null
