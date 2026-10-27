@@ -775,6 +775,11 @@ func shortSlot(_ w: UsageWindow) -> String {
   return n.count > 3 ? String(n.prefix(3)).lowercased() : n
 }
 
+/** Used up and still waiting on its reset (a reset already past means the numbers are behind, not the limit). */
+func isOut(_ w: UsageWindow) -> Bool {
+  w.usedPct >= 100 && (w.resetsAt ?? 0) > Date().timeIntervalSince1970 * 1000
+}
+
 /** 5h ▬▬▬▬▭▭ 72% */
 struct MeterLine: View {
   let w: UsageWindow
@@ -787,11 +792,18 @@ struct MeterLine: View {
     let lv = level(w.usedPct)
     HStack(spacing: 0) {
       Text(shortSlot(w)).font(.system(size: 10)).foregroundColor(C.muted).frame(minWidth: 16, alignment: .leading)
-      Meter(used: w.usedPct, display: display, color: lv ?? accent, width: length, height: 5, delay: 0.12 + 0.07 * Double(index))
-        .padding(.leading, 3)
-        .padding(.trailing, 5)
-      Text("\(Int(shown(w, display).rounded()))%").font(.system(size: 11, weight: .semibold)).foregroundColor(lv ?? C.text)
-        .frame(minWidth: 27, alignment: .leading)
+      if isOut(w) {
+        // Used up: no bar, just when it comes back, in the room the bar and the number take.
+        Text("\u{21BB} \(formatResetShort(w.resetsAt))").font(.system(size: 11, weight: .semibold)).foregroundColor(C.error)
+          .frame(minWidth: length + 32, alignment: .leading)
+          .padding(.leading, 3)
+      } else {
+        Meter(used: w.usedPct, display: display, color: lv ?? accent, width: length, height: 5, delay: 0.12 + 0.07 * Double(index))
+          .padding(.leading, 3)
+          .padding(.trailing, 5)
+        Text("\(Int(shown(w, display).rounded()))%").font(.system(size: 11, weight: .semibold)).foregroundColor(lv ?? C.text)
+          .frame(minWidth: 27, alignment: .leading)
+      }
     }
   }
 }
@@ -1157,6 +1169,11 @@ struct CompactCard: View {
 
 // ---- strip ---------------------------------------------------------------------------
 
+/** The used-up limit that frees up last (when you can work again), or nil while every limit has room. */
+func blocked(_ s: Slots) -> UsageWindow? {
+  [s.short, s.long].compactMap { $0 }.filter(isOut).max { $0.resetsAt! < $1.resetsAt! }
+}
+
 /** One account in the strip: a ring pair around the mark (or the mark and a meter per limit) and its numbers. */
 struct StripChip: View {
   let u: ProviderUsage
@@ -1225,7 +1242,11 @@ struct StripChip: View {
         (Text("\(Int(shown(main, display).rounded()))%").font(.system(size: 13, weight: .semibold))
           .foregroundColor(level(main.usedPct) ?? C.text)
           + Text(" \(slotName(main))").font(.system(size: 10)).foregroundColor(C.muted))
-        if let other = other {
+        // A used-up limit: the second line tells when it comes back instead.
+        if let b = blocked(s) {
+          // Named when it isn't the limit on the line above.
+          Text("\(b.label == main.label ? "" : slotName(b) + " ")\u{21BB} \(formatResetShort(b.resetsAt))").font(.system(size: 10)).foregroundColor(C.error)
+        } else if let other = other {
           Text("\(slotName(other)) \(Int(shown(other, display).rounded()))%").font(.system(size: 10))
             .foregroundColor(level(other.usedPct) ?? C.muted)
         } else if !shortAccount(u).isEmpty {

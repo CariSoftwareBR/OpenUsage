@@ -1169,6 +1169,17 @@ def short_slot(w):
     return "cr" if n.startswith("Credit") else "day" if n.startswith("Daily") else n[:3].lower() if len(n) > 3 else n
 
 
+def is_out(w):
+    """Used up and still waiting on its reset (a reset already past means the numbers are behind, not the limit)."""
+    return w is not None and w["usedPct"] >= 100 and w.get("resetsAt") is not None and w["resetsAt"] > time.time() * 1000
+
+
+def blocked_slot(short, long):
+    """The used-up limit that frees up last (when you can work again), or None while every limit has room."""
+    out = [w for w in (short, long) if is_out(w)]
+    return max(out, key=lambda w: w["resetsAt"]) if out else None
+
+
 def meter_line(u, w, display, accent, length, index, intro):
     """5h ▬▬▬▬▭▭ 72%"""
     lv = level(w["usedPct"])
@@ -1176,6 +1187,12 @@ def meter_line(u, w, display, accent, length, index, intro):
     name = label(span(short_slot(w), 10, C["muted"]))
     name.set_size_request(16, -1)
     line.pack_start(name, False, False, 0)
+    # Used up: no bar, just when it comes back, in the room the bar and the number take.
+    if is_out(w):
+        back = label(span(f"↻ {format_reset_short(w['resetsAt'])}", 11, C["error"], "bold"))
+        back.set_size_request(length + 32, -1)
+        line.pack_start(margins(back, left=3), False, False, 0)
+        return line
     meter = Meter(w["usedPct"], lv or accent, f"{uid(u)}|{w['label']}|m", length, 5, 120 + 70 * index, intro, display)
     line.pack_start(margins(meter, left=3, right=5), False, False, 0)
     pct = label(span(f"{round(shown_pct(w, display))}%", 11, lv or C["text"], "bold"))
@@ -1281,6 +1298,12 @@ def strip_chip(u, display, gauge, index, intro):
                 sub, color = f"{slot_name(other)} {round(shown_pct(other, display))}%", level(other["usedPct"]) or C["muted"]
             else:
                 sub, color = short_account(u), C["muted"]
+            # A used-up limit: the second line tells when it comes back instead.
+            blocked = blocked_slot(short, long)
+            if blocked is not None:
+                # Named when it isn't the limit on the line above.
+                name = "" if blocked is main else f"{slot_name(blocked)} "
+                sub, color = f"{name}↻ {format_reset_short(blocked['resetsAt'])}", C["error"]
         elif extras:
             col.pack_start(label(span(extras[0]["value"], 13, weight="bold")), False, False, 0)
             sub, color = extras[0]["label"].lower(), C["muted"]
