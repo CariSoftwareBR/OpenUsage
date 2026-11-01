@@ -333,12 +333,18 @@ def _is_today(d):
     return time.localtime(time.time())[:3] == d[:3]
 
 
-def format_reset(ms):
+def format_reset(ms, with_date=False):
+    """"20:00" today, else "Mon 02 Nov · 11:59". A weekly or monthly limit always names its day ("today · 18:00"),
+    so it can't be taken for the 5-hour one."""
     if ms is None:
         return ""
     d = time.localtime(ms / 1000)
     t = time.strftime("%H:%M", d)
-    return t if _is_today(d) else time.strftime("%a %d %b", d) + ", " + t
+    if _is_today(d):
+        return f"today · {t}" if with_date else t
+    if time.localtime(time.time() + 86400)[:3] == d[:3]:
+        return f"tomorrow · {t}"
+    return time.strftime("%a %d %b", d).replace(".", "") + f" · {t}"
 
 
 def format_reset_short(ms):
@@ -416,12 +422,12 @@ def short_account(u):
 
 def tip_text(u, display):
     """Everything the ring leaves out: every limit with its reset, the plan and any error."""
-    lines = [(u.get("account") or u["name"]) + (f"  -  {u['plan'].upper()}" if u.get("plan") else "")]
+    lines = [(u.get("account") or u["name"]) + (f"   {u['plan'].upper()}" if u.get("plan") else "")]
     for w in u.get("windows") or []:
-        reset = format_reset(w.get("resetsAt"))
+        reset = format_reset(w.get("resetsAt"), "Hour" not in w["label"])
         lines.append(
             f"{w['label']}   {round(shown_pct(w, display))}% {'used' if display == 'used' else 'left'}"
-            + (f"  -  resets {reset}" if reset else "")
+            + (f"   ↻ {reset}" if reset else "")
         )
     for x in u.get("extras") or []:
         lines.append(f"{x['label']}   {x['value']}")
@@ -1103,9 +1109,9 @@ def card(u, display, index=0, intro=False):
     for i, w in enumerate(u.get("windows") or []):
         pct = shown_pct(w, display)
         lv = level(w["usedPct"])
-        reset = format_reset(w.get("resetsAt"))
+        reset = format_reset(w.get("resetsAt"), "Hour" not in w["label"])
         row = hbox(8)
-        row.pack_start(label(span(w["label"]) + (span(f"  {reset}", 12, C["muted"]) if reset else ""), ellipsize=True), True, True, 0)
+        row.pack_start(label(span(w["label"]) + (span(f"   ↻ {reset}", 11.5, C["muted"]) if reset else ""), ellipsize=True), True, True, 0)
         row.pack_end(label(span(f"{round(pct)}%", 13, lv or C["text"], "bold"), xalign=1), False, False, 0)
         box.pack_start(margins(row, top=9 if i == 0 else 8), False, False, 0)
         meter = Meter(w["usedPct"], lv or C["muted"], f"{uid(u)}|{w['label']}", delay=120 + 70 * index, intro=intro, display=display)

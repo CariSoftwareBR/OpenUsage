@@ -420,14 +420,20 @@ func level(_ pct: Double) -> Color? { pct >= 80 ? C.error : pct >= 50 ? C.warn :
 
 // ---- formatting ------------------------------------------------------------------
 
-func formatReset(_ ms: Double?) -> String {
+/**
+ * "20:00" today, else "Mon 02 Nov · 11:59". A weekly or monthly limit always names its day ("today · 18:00"),
+ * so it can't be taken for the 5-hour one.
+ */
+func formatReset(_ ms: Double?, withDate: Bool = false) -> String {
   guard let ms = ms else { return "" }
   let d = Date(timeIntervalSince1970: ms / 1000)
   let time = DateFormatter.localizedString(from: d, dateStyle: .none, timeStyle: .short)
-  if Calendar.current.isDateInToday(d) { return time }
+  if Calendar.current.isDateInToday(d) { return withDate ? "today \u{00B7} " + time : time }
+  if Calendar.current.isDateInTomorrow(d) { return "tomorrow \u{00B7} " + time }
   let f = DateFormatter()
   f.setLocalizedDateFormatFromTemplate("EEEddMMM")
-  return f.string(from: d) + ", " + time
+  let day = f.string(from: d).replacingOccurrences(of: ",", with: "").replacingOccurrences(of: ".", with: "")
+  return day + " \u{00B7} " + time
 }
 
 /** Shorter, for the compact rows: "14:00", "Wed 14:00" within the week, else "14 Oct". */
@@ -891,8 +897,8 @@ struct Card: View {
         let pct = display == "used" ? w.usedPct : 100 - w.usedPct
         let lv = level(w.usedPct)
         HStack {
-          let reset = formatReset(w.resetsAt)
-          (Text(w.label) + Text(reset.isEmpty ? "" : "  \(reset)").font(.system(size: 12)).foregroundColor(C.muted))
+          let reset = formatReset(w.resetsAt, withDate: !w.label.contains("Hour"))
+          (Text(w.label) + Text(reset.isEmpty ? "" : "   \u{21BB} \(reset)").font(.system(size: 11.5)).foregroundColor(C.muted))
             .lineLimit(1).truncationMode(.tail)
           Spacer()
           Text("\(Int(pct.rounded()))%").font(.system(size: 13, weight: .semibold)).foregroundColor(lv ?? C.text)
@@ -958,12 +964,12 @@ func shortAccount(_ u: ProviderUsage) -> String {
 
 /** Everything the ring leaves out: every limit with its reset, the plan and any error. */
 func tipText(_ u: ProviderUsage, _ display: String) -> String {
-  var lines = [(u.account ?? u.name) + (u.plan.map { "  -  " + $0.uppercased() } ?? "")]
+  var lines = [(u.account ?? u.name) + (u.plan.map { "   " + $0.uppercased() } ?? "")]
   for w in u.windows {
-    let reset = formatReset(w.resetsAt)
+    let reset = formatReset(w.resetsAt, withDate: !w.label.contains("Hour"))
     lines.append(
       "\(w.label)   \(Int(shown(w, display).rounded()))% \(display == "used" ? "used" : "left")"
-        + (reset.isEmpty ? "" : "  -  resets \(reset)"))
+        + (reset.isEmpty ? "" : "   \u{21BB} \(reset)"))
   }
   for x in u.extras { lines.append("\(x.label)   \(x.value)") }
   if let e = u.error { lines.append(e) }
