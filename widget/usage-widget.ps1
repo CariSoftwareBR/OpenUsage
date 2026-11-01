@@ -119,7 +119,7 @@ function Brush([string]$hex) { [System.Windows.Media.BrushConverter]::new().Conv
                        Margin="0,0,-4,0" Visibility="Collapsed"/>
             </Grid>
           </Button>
-          <Button x:Name="AddBtn" Style="{StaticResource Btn}" ToolTip="Add account">+</Button>
+          <Button x:Name="AddBtn" Style="{StaticResource Btn}" ToolTip="Accounts">+</Button>
           <Button x:Name="ModeBtn" Style="{StaticResource Btn}" ToolTip="Used / left">Used</Button>
           <Button x:Name="RefreshBtn" Style="{StaticResource Btn}" ToolTip="Refresh" RenderTransformOrigin="0.5,0.5">
             <Button.RenderTransform><RotateTransform/></Button.RenderTransform>&#x27F3;</Button>
@@ -1281,6 +1281,55 @@ function New-DialogXaml([string]$title, [string]$heading, [string]$body, [int]$w
       <Setter Property="BorderBrush" Value="$($C.Text)"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
     </Style>
+    <Style x:Key="Danger" TargetType="Button" BasedOn="{StaticResource Btn}">
+      <Setter Property="Background" Value="$($C.Error)"/>
+      <Setter Property="Foreground" Value="#FFFFFF"/>
+      <Setter Property="BorderBrush" Value="$($C.Error)"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <Style x:Key="IconBtn" TargetType="Button">
+      <Setter Property="Foreground" Value="$($C.Muted)"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="Transparent" CornerRadius="7" Width="30" Height="30">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="$($C.Hover)"/>
+                <Setter Property="Foreground" Value="$($C.Error)"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="b" Property="Opacity" Value="0.4"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Tile" TargetType="Button">
+      <Setter Property="Foreground" Value="$($C.Text)"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="HorizontalContentAlignment" Value="Left"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="$($C.Card)" BorderBrush="$($C.CardBorder)" BorderThickness="1" CornerRadius="9" Padding="10,9">
+              <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="$($C.Hover)"/>
+                <Setter TargetName="b" Property="BorderBrush" Value="$($C.Muted)"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="b" Property="Opacity" Value="0.45"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style x:Key="Seg" TargetType="RadioButton">
       <Setter Property="MinWidth" Value="78"/>
       <Setter Property="Padding" Value="12,4"/>
@@ -1483,16 +1532,236 @@ function Complete-Logins {
   if ($script:proc) { $script:refreshPending = $true } else { Start-Refresh }
 }
 
-$addMenu = New-Object System.Windows.Controls.ContextMenu
-$addMenu.PlacementTarget = $ui.AddBtn
-$addMenu.Placement = 'Bottom'
-foreach ($kind in $AccountKinds.Keys) {
-  $mi = New-Object System.Windows.Controls.MenuItem
-  $mi.Header = "$($AccountKinds[$kind].Name) account"
-  $mi.Icon = New-Logo $kind $Accents[$kind] 14
-  $mi.Tag = $kind
-  $mi.add_Click({ param($s) Add-Account $s.Tag })
-  $null = $addMenu.Items.Add($mi)
+# Runs scripts\<name> with node, out of sight; @{ Proc; Out } to poll, or $null when node can't start.
+function Start-NodeScript([string]$name, [string[]]$arguments) {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = 'node'
+  $psi.Arguments = '--experimental-strip-types --no-warnings "' + (Join-Path $Root "scripts\$name") + '" ' + (($arguments | ForEach-Object { "`"$_`"" }) -join ' ')
+  $psi.WorkingDirectory = $Root
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  try {
+    $p = [System.Diagnostics.Process]::Start($psi)
+    return @{ Proc = $p; Out = $p.StandardOutput.ReadToEndAsync() }
+  } catch {
+    return $null
+  }
+}
+
+# A provider's mark on a soft tile of its color.
+function New-LogoBadge([string]$kind, [double]$box = 30) {
+  $b = New-Object System.Windows.Controls.Border
+  $b.Width = $box; $b.Height = $box
+  $b.CornerRadius = 8
+  $bg = Brush $Accents[$kind]; $bg.Opacity = 0.16
+  $b.Background = $bg
+  $logo = New-Logo $kind $Accents[$kind] ([math]::Round($box / 2))
+  $logo.HorizontalAlignment = 'Center'
+  $b.Child = $logo
+  return $b
+}
+
+# The "+" button: add a Claude or Codex account, and see or remove the ones added before. scripts\remove-account.ts
+# lists them (any extra folder the providers read, whatever its name) and removes the folder with its command.
+function Show-Accounts {
+  $tiles = foreach ($kind in $AccountKinds.Keys) {
+    $margin = if ($kind -eq @($AccountKinds.Keys)[0]) { '0,0,5,0' } else { '5,0,0,0' }
+    @"
+          <Button x:Name="Add_$kind" Style="{StaticResource Tile}" Margin="$margin" Tag="$kind">
+            <DockPanel>
+              <Border x:Name="Badge_$kind" DockPanel.Dock="Left" Margin="0,0,10,0"/>
+              <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="$($AccountKinds[$kind].Name)" FontWeight="SemiBold" FontSize="12.5"/>
+                <TextBlock x:Name="AddNote_$kind" Text="New sign-in" Foreground="$($C.Muted)" FontSize="11"/>
+              </StackPanel>
+            </DockPanel>
+          </Button>
+"@
+  }
+  $body = @"
+      <TextBlock Style="{StaticResource Caption}" Text="ADD AN ACCOUNT"/>
+      <UniformGrid Columns="2">
+$($tiles -join "`n")
+      </UniformGrid>
+      <TextBlock Foreground="$($C.Muted)" FontSize="11.5" TextWrapping="Wrap" Margin="0,8,0,0">Each one gets its own command, like claude2, and its own card here.</TextBlock>
+      <Border Height="1" Background="$($C.Divider)" Margin="0,14,0,14"/>
+      <TextBlock Style="{StaticResource Caption}" Text="ADDED ACCOUNTS"/>
+      <StackPanel x:Name="Rows">
+        <TextBlock Text="Looking for accounts..." Foreground="$($C.Muted)" FontSize="12"/>
+      </StackPanel>
+"@
+  $heading = "<Run FontFamily=`"Segoe Fluent Icons, Segoe MDL2 Assets`" Foreground=`"$($C.Muted)`" BaselineAlignment=`"Center`">&#xE716;</Run>  Accounts"
+  $names = @('Rows') + @(foreach ($kind in $AccountKinds.Keys) { "Add_$kind"; "Badge_$kind"; "AddNote_$kind" })
+  $d = New-Dialog (New-DialogXaml 'OpenUsage accounts' $heading $body 360) $names
+  $dlg = $d.Window
+  $script:acctAdd = $null
+  $script:acctJob = $null
+  $script:acctRemoving = $null
+
+  foreach ($kind in $AccountKinds.Keys) {
+    $d["Badge_$kind"].Child = New-LogoBadge $kind
+    if (-not (Get-Command $AccountKinds[$kind].Command -ErrorAction SilentlyContinue)) {
+      $d["Add_$kind"].IsEnabled = $false
+      $d["AddNote_$kind"].Text = 'Not installed'
+    }
+    # Signing in opens its own dialog and a terminal: this one steps aside first.
+    $d["Add_$kind"].add_Click({ param($s) $script:acctAdd = [string]$s.Tag; $dlg.DialogResult = $true })
+  }
+
+  $showEmpty = {
+    $d.Rows.Children.Clear()
+    $t = New-Text 'None yet. Add one above.' $C.Muted 12
+    $null = $d.Rows.Children.Add($t)
+  }
+
+  # One card per added account; its bin asks inline before anything is deleted.
+  $newRow = {
+    param($a)
+    $k = $AccountKinds[[string]$a.kind]
+    $folder = [string]$a.folder
+    $cmds = @($a.commands | Where-Object { $_ })
+    $card = New-Object System.Windows.Controls.Border
+    $card.Background = Brush $C.Card
+    $card.BorderBrush = Brush $C.CardBorder
+    $card.BorderThickness = 1
+    $card.CornerRadius = 9
+    $card.Padding = '10,8,6,8'
+    $card.Margin = '0,0,0,6'
+    $stack = New-Object System.Windows.Controls.StackPanel
+    $card.Child = $stack
+
+    $top = New-Object System.Windows.Controls.DockPanel
+    $del = New-Object System.Windows.Controls.Button
+    $del.Style = $dlg.FindResource('IconBtn')
+    $del.Content = [string][char]0xE74D
+    $del.ToolTip = 'Remove this account'
+    $del.VerticalAlignment = 'Center'
+    [System.Windows.Controls.DockPanel]::SetDock($del, 'Right')
+    $null = $top.Children.Add($del)
+    $badge = New-LogoBadge ([string]$a.kind)
+    $badge.Margin = '0,0,10,0'
+    [System.Windows.Controls.DockPanel]::SetDock($badge, 'Left')
+    $null = $top.Children.Add($badge)
+    $texts = New-Object System.Windows.Controls.StackPanel
+    $texts.VerticalAlignment = 'Center'
+    $title = New-Text $(if ($a.account) { [string]$a.account } else { "$($k.Name) ($folder)" }) $C.Text 12.5 'SemiBold'
+    $title.TextTrimming = 'CharacterEllipsis'
+    $title.ToolTip = $title.Text
+    $where = @($cmds | Select-Object -First 1) + "~\$folder"
+    $sub = New-Text ($where -join "  $([char]0x00B7)  ") $C.Muted 11
+    $sub.TextTrimming = 'CharacterEllipsis'
+    [System.Windows.Automation.AutomationProperties]::SetName($del, "Remove $folder")
+    $null = $texts.Children.Add($title)
+    $null = $texts.Children.Add($sub)
+    $null = $top.Children.Add($texts)
+    $null = $stack.Children.Add($top)
+
+    # The question, folded away until the bin is clicked.
+    $ask = New-Object System.Windows.Controls.StackPanel
+    $ask.Visibility = 'Collapsed'
+    $ask.Margin = '0,10,4,2'
+    $what = if ($cmds) { "the $($cmds -join ', ') command and the $folder folder" } else { "the $folder folder" }
+    $info = New-Text "Deletes $what, with its sign-in. Your main account stays as it is." $C.Muted 11.5
+    $info.TextWrapping = 'Wrap'
+    $null = $ask.Children.Add($info)
+    $btns = New-Object System.Windows.Controls.StackPanel
+    $btns.Orientation = 'Horizontal'
+    $btns.HorizontalAlignment = 'Right'
+    $btns.Margin = '0,10,0,0'
+    $no = New-Object System.Windows.Controls.Button
+    $no.Style = $dlg.FindResource('Btn')
+    $no.Content = 'Cancel'
+    $no.Margin = '0,0,8,0'
+    $yes = New-Object System.Windows.Controls.Button
+    $yes.Style = $dlg.FindResource('Danger')
+    $yes.Content = 'Remove'
+    $null = $btns.Children.Add($no)
+    $null = $btns.Children.Add($yes)
+    $null = $ask.Children.Add($btns)
+    $null = $stack.Children.Add($ask)
+
+    $row = @{ Card = $card; Ask = $ask; Info = $info; Text = $info.Text; Del = $del; Yes = $yes; No = $no; A = $a }
+    $del.Tag = $row; $no.Tag = $row; $yes.Tag = $row
+    $del.add_Click({
+      param($s)
+      $r = $s.Tag
+      $open = $r.Ask.Visibility -ne 'Visible'
+      $r.Ask.Visibility = if ($open) { 'Visible' } else { 'Collapsed' }
+      if ($open) { Add-Intro $r.Ask 0 0 -Force }
+    })
+    $no.add_Click({ param($s) $s.Tag.Ask.Visibility = 'Collapsed' })
+    $yes.add_Click({
+      param($s)
+      $r = $s.Tag
+      if ($script:acctJob) { return }
+      $job = Start-NodeScript 'remove-account.ts' @([string]$r.A.kind, [string]$r.A.folder, '--json')
+      if (-not $job) { $r.Info.Text = 'node was not found.'; $r.Info.Foreground = Brush $C.Error; return }
+      $script:acctJob = $job
+      $script:acctRemoving = $r
+      $r.Yes.IsEnabled = $false; $r.No.IsEnabled = $false; $r.Del.IsEnabled = $false
+      $r.Yes.Content = 'Removing...'
+      $r.Info.Text = $r.Text; $r.Info.Foreground = Brush $C.Muted
+    })
+    return $card
+  }
+
+  # A removal is done: the card leaves, and so does the account's card on the widget.
+  $finishRemove = {
+    param($r, $res)
+    if (-not $res -or $res.error) {
+      $r.Info.Text = if ($res -and $res.error) { [string]$res.error } else { "Couldn't remove it." }
+      $r.Info.Foreground = Brush $C.Error
+      $r.Yes.Content = 'Remove'; $r.Yes.IsEnabled = $true; $r.No.IsEnabled = $true; $r.Del.IsEnabled = $true
+      return
+    }
+    $key = "$($r.A.kind):$($r.A.folder)"
+    $script:data = @($script:data | Where-Object { $_.key -ne $key })
+    Render
+    $fade = New-Anim 1 0 220 (New-Ease)
+    $script:acctFading = $r.Card
+    $fade.add_Completed({
+      $d.Rows.Children.Remove($script:acctFading)
+      if (-not $d.Rows.Children.Count) { & $showEmpty }
+    })
+    $r.Card.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
+  }
+
+  # Polls the node script that's running: the list at first, then any removal.
+  $script:acctJob = Start-NodeScript 'remove-account.ts' @('--list')
+  $script:acctListing = [bool]$script:acctJob
+  if (-not $script:acctJob) { $d.Rows.Children.Clear(); $null = $d.Rows.Children.Add((New-Text 'node was not found.' $C.Error 12)) }
+  $timer = New-Object System.Windows.Threading.DispatcherTimer
+  $timer.Interval = [TimeSpan]::FromMilliseconds(120)
+  $timer.add_Tick({
+    $job = $script:acctJob
+    if (-not $job -or -not $job.Proc.HasExited) { return }
+    $script:acctJob = $null
+    $res = $null
+    try { $res = $job.Out.Result | ConvertFrom-Json } catch {}
+    if ($script:acctListing) {
+      $script:acctListing = $false
+      $list = @($res | ForEach-Object { $_ } | Where-Object { $_ })
+      if (-not $list.Count) { & $showEmpty; return }
+      $d.Rows.Children.Clear()
+      $i = 0
+      foreach ($a in $list) {
+        $card = & $newRow $a
+        $null = $d.Rows.Children.Add($card)
+        Add-Intro $card $i 45 -Force
+        $i++
+      }
+    } else {
+      $r = $script:acctRemoving
+      $script:acctRemoving = $null
+      & $finishRemove $r $res
+    }
+  })
+  $timer.Start()
+  $added = $dlg.ShowDialog()
+  $timer.Stop()
+  if ($added -and $script:acctAdd) { Add-Account $script:acctAdd }
 }
 
 # ---- update -------------------------------------------------------------------
@@ -2018,14 +2287,7 @@ $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $null = $menu.Items.Add('Show / hide', $null, { Toggle-Window })
 $null = $menu.Items.Add('Refresh', $null, { Start-Refresh })
 $null = $menu.Items.Add('Settings', $null, { Show-Settings })
-$addItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Add account'
-foreach ($kind in $AccountKinds.Keys) {
-  $sub = New-Object System.Windows.Forms.ToolStripMenuItem "$($AccountKinds[$kind].Name) account"
-  $sub.Tag = $kind
-  $sub.add_Click({ param($s) Add-Account $s.Tag })
-  $null = $addItem.DropDownItems.Add($sub)
-}
-$null = $menu.Items.Add($addItem)
+$null = $menu.Items.Add('Accounts...', $null, { Show-Accounts })
 $null = $menu.Items.Add('-')
 $topItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Always on top'
 $topItem.Checked = $win.Topmost
@@ -2075,7 +2337,7 @@ $ui.ModeBtn.add_Click({
   Render
 })
 $ui.GearBtn.add_Click({ Show-Settings })
-$ui.AddBtn.add_Click({ $addMenu.IsOpen = $true })
+$ui.AddBtn.add_Click({ Show-Accounts })
 $ui.RefreshBtn.add_Click({ Start-Refresh })
 $ui.MinBtn.add_Click({ Set-Minimized (-not $script:minimized) })
 $ui.HideBtn.add_Click({ Toggle-Window })

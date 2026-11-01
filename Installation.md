@@ -299,7 +299,7 @@ The widget only **reads** credentials the tools themselves already saved on your
 
 Claude Code and Codex keep one login per config folder, so each extra account gets its own folder in your home (`.claude-2`, `.codex-work`…) and a command that opens it, like `claude2`. The widget finds these folders and shows one card per account.
 
-- **In the widget (Windows, macOS, Linux):** click **+** in the widget header (or **Add account** in the tray / menu bar menu), pick a command name and sign in with the other account in the terminal that opens.
+- **In the widget (Windows, macOS, Linux):** click **+** in the widget header (or **Accounts...** in the Windows tray, **Add Claude account…** / **Add Codex account…** in the macOS / Linux menu), pick a command name and sign in with the other account in the terminal that opens.
 - **Or from any terminal:**
 
   ```bash
@@ -309,7 +309,9 @@ Claude Code and Codex keep one login per config folder, so each extra account ge
 
 After that, `claude` opens your main account and `claude2` the other one, in any terminal (the same goes for `codex` / `codex2`). The command lives next to `claude` on Windows and in `~/.local/bin` elsewhere. If nothing was signed in, or the browser signed in to your main account again, the new folder and command are removed; sign out in the browser (or use a private window) and try again.
 
-Claude tokens are only renewed by Claude Code itself, so open `claude2` now and then to keep its card fresh. To remove an account, delete its folder and command.
+Claude tokens are only renewed by Claude Code itself, so open `claude2` now and then to keep its card fresh.
+
+To remove an extra account: on Windows, click **+** and use the bin next to it under **Added accounts**; on macOS and Linux, run `npm run remove-account -- claude claude2` (or `codex codex2`). This deletes that account's folder, with its sign-in and history, and its command; your main account is never touched.
 
 ## Uninstall
 
@@ -343,6 +345,7 @@ Layout:
 - `scripts/update.ts`: the version, and the self-update behind **Update now** (`check` / `apply`).
 - `scripts/keys.ts`: the API keys behind **Settings → API keys**: which were found, and checking and keeping a pasted one.
 - `scripts/add-account.ts`: adds another Claude or Codex account (folder, command, sign-in); the widgets' **+** button runs it.
+- `scripts/remove-account.ts`: lists the extra accounts (`--list`) and removes one (folder and command); the Windows **Accounts** window runs it.
 - `widget/usage-widget.ps1`: the WPF UI. The `.vbs` only launches it without a console.
 - `widget/openusage.ico`: the app icon, used by the tray and the shortcuts.
 - `widget-mac/OpenUsage.swift`: the macOS app (AppKit + SwiftUI). `widget-mac/build.sh` compiles it into `OpenUsage.app`.

@@ -1,81 +1,13 @@
 // Adds another Claude or Codex account: its own config folder in home, a command that opens it
 // (e.g. "claude2") and a sign-in. Works on Windows, macOS and Linux; the widgets' "+" button runs it too.
 // Usage: npm run add-account -- <claude|codex> [command-name]
+// Removing one again: scripts/remove-account.ts.
 import { spawn } from "node:child_process"
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { delimiter, dirname, join } from "node:path"
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { createInterface } from "node:readline/promises"
 import { PROVIDERS } from "../src/providers/index.ts"
-
-const KINDS = {
-  claude: {
-    name: "Claude",
-    prefix: ".claude",
-    envVar: "CLAUDE_CONFIG_DIR",
-    command: "claude",
-    login: [] as string[],
-    hint: "Sign in with the other Claude account, then type /exit.",
-  },
-  codex: {
-    name: "Codex",
-    prefix: ".codex",
-    envVar: "CODEX_HOME",
-    command: "codex",
-    login: ["login"],
-    hint: "Sign in with the other ChatGPT account in the browser.",
-  },
-} as const
-type Kind = keyof typeof KINDS
-
-const isWin = process.platform === "win32"
-const pathDirs = () => (process.env.PATH ?? "").split(delimiter).filter(Boolean)
-
-function isFile(p: string) {
-  try {
-    return statSync(p).isFile()
-  } catch {
-    return false
-  }
-}
-
-function canWrite(dir: string) {
-  try {
-    accessSync(dir, constants.W_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** Full path of a command on PATH, like `which`. */
-function which(name: string): string | undefined {
-  const exts = isWin ? ["", ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")] : [""]
-  for (const dir of pathDirs()) {
-    for (const ext of exts) {
-      const p = join(dir, name + ext)
-      if (!isFile(p)) continue
-      if (isWin ? ext !== "" : isExecutable(p)) return p
-    }
-  }
-}
-
-function isExecutable(p: string) {
-  try {
-    accessSync(p, constants.X_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** "claude2" -> ~/.claude-2, "claude-work" -> ~/.claude-work, "work" -> ~/.claude-work. */
-export function accountDir(kind: Kind, name: string): string | undefined {
-  const k = KINDS[kind]
-  let suffix = name.toLowerCase().startsWith(k.command) ? name.slice(k.command.length) : name
-  suffix = suffix.replace(/^[-_]+/, "")
-  return suffix ? join(homedir(), `${k.prefix}-${suffix}`) : undefined
-}
+import { accountDir, isWin, type Kind, KINDS, pathDirs, shimDir, which } from "./account-kinds.ts"
 
 /** Why a command name can't be used, or undefined when it can. */
 export function problem(kind: Kind, name: string): string | undefined {
@@ -92,14 +24,6 @@ export function suggestion(kind: Kind): string {
   let n = 2
   while (problem(kind, `${KINDS[kind].command}${n}`)) n++
   return `${KINDS[kind].command}${n}`
-}
-
-/** Where the new command goes: next to the real one on Windows, ~/.local/bin (when on PATH) elsewhere. */
-function shimDir(real: string): string {
-  if (isWin) return dirname(real)
-  const local = join(homedir(), ".local", "bin")
-  if (pathDirs().includes(local)) return local
-  return canWrite(dirname(real)) ? dirname(real) : local
 }
 
 function writeShim(kind: Kind, file: string, dir: string) {
