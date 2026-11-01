@@ -19,7 +19,8 @@ jobs:
       - run: test -x "$RUNNER_TEMP/OpenUsage.app/Contents/MacOS/OpenUsage"
       # Every provider should come back as JSON, even if only with a "not signed in" error.
       - run: |
-          node --experimental-strip-types --no-warnings scripts/usage-json.ts | node -e "const a=JSON.parse(require('fs').readFileSync(0,'utf8'));if(a.length!==4)process.exit(1);console.log(a.map(u=>u.id+': '+(u.error??'ok')).join('\n'))"
+          ids=$(node --experimental-strip-types --no-warnings -e "import('./src/providers/index.ts').then((m) => console.log(Object.keys(m.PROVIDERS).join(' ')))")
+          node --experimental-strip-types --no-warnings scripts/usage-json.ts $ids | IDS="$ids" node -e "const a=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(a.map(u=>u.id+': '+(u.error??'ok')).join('\n'));if(a.map(u=>u.id).join(' ')!==process.env.IDS)process.exit(1)"
 
   # scripts/add-account.ts end to end on Unix, with a fake codex that "signs in" by copying an auth.json.
   add-account:
