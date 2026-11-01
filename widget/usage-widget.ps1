@@ -179,11 +179,15 @@ $win.Topmost = if ($null -ne $state.topmost) { [bool]$state.topmost } else { $tr
 # ---- formatting ---------------------------------------------------------------
 function Level([double]$pct) { if ($pct -ge 80) { $C.Error } elseif ($pct -ge 50) { $C.Warn } else { $null } }
 
-function Format-Reset($ms) {
+# "20:00" today, else "seg 02 nov · 11:59". A weekly or monthly limit always names its day ("today · 18:00"),
+# so it can't be taken for the 5-hour one.
+function Format-Reset($ms, [switch]$WithDate) {
   if (-not $ms) { return '' }
   $d = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$ms).LocalDateTime
-  if ($d.Date -eq (Get-Date).Date) { return $d.ToString('t') }
-  return $d.ToString('ddd, dd MMM') + ', ' + $d.ToString('t')
+  $dot = " $([char]0x00B7) "
+  if ($d.Date -eq (Get-Date).Date) { return $(if ($WithDate) { "today$dot" } else { '' }) + $d.ToString('t') }
+  if ($d.Date -eq (Get-Date).Date.AddDays(1)) { return "tomorrow$dot" + $d.ToString('t') }
+  return $d.ToString('ddd dd MMM').Replace('.', '') + $dot + $d.ToString('t')
 }
 
 # Shorter, for the compact rows: "14:00", "Wed 14:00" within the week, else "14 Oct".
@@ -344,8 +348,8 @@ function Render-Normal {
       $lv = Level $w.usedPct
       $label = New-Object System.Windows.Controls.TextBlock
       $label.Inlines.Add((New-Object System.Windows.Documents.Run $w.label))
-      $reset = Format-Reset $w.resetsAt
-      if ($reset) { $label.Inlines.Add((New-Object System.Windows.Documents.Run "  $reset" -Property @{ Foreground = (Brush $C.Muted); FontSize = 12 })) }
+      $reset = Format-Reset $w.resetsAt -WithDate:($w.label -notmatch 'Hour')
+      if ($reset) { $label.Inlines.Add((New-Object System.Windows.Documents.Run "   $([char]0x21BB) $reset" -Property @{ Foreground = (Brush $C.Muted); FontSize = 11.5 })) }
       $label.TextTrimming = 'CharacterEllipsis'
       $valueColor = if ($lv) { $lv } else { $C.Text }
       $row = New-Row $label (New-Text ("{0}%" -f [math]::Round($pct)) $valueColor 13 'SemiBold')
@@ -475,34 +479,82 @@ function New-Ring($u, [double]$size = 42) {
   return $g
 }
 
-# Everything the ring leaves out: every limit with its reset, the plan and any error.
+# Everything the ring leaves out, as a small table: the account and plan, then per limit what's used and when it
+# resets, then any extras and the error.
 function New-Tip($u) {
   $tt = New-Object System.Windows.Controls.ToolTip
   $tt.Background = Brush $C.Card
   $tt.BorderBrush = Brush $C.Border
   $tt.Foreground = Brush $C.Text
-  $tt.Padding = '10,8'
+  $tt.Padding = '12,10,12,10'
   $sp = New-Object System.Windows.Controls.StackPanel
-  $title = if ($u.account) { [string]$u.account } else { [string]$u.name }
-  if ($u.plan) { $title += "  -  $(([string]$u.plan).ToUpper())" }
-  $sp.Children.Add((New-Text $title $C.Text 12 'SemiBold')) | Out-Null
-  foreach ($w in $u.windows) {
-    $line = "{0}   {1}% {2}" -f $w.label, [math]::Round((Get-Shown $w.usedPct)), $(if ($script:display -eq 'used') { 'used' } else { 'left' })
-    $reset = Format-Reset $w.resetsAt
-    if ($reset) { $line += "  -  resets $reset" }
-    $row = New-Text $line $C.Muted 11.5
-    $row.Margin = '0,3,0,0'
-    $sp.Children.Add($row) | Out-Null
+  $sp.MinWidth = 230
+
+  $head = New-Object System.Windows.Controls.DockPanel
+  if ($u.plan) {
+    $pill = New-Object System.Windows.Controls.Border
+    $pill.CornerRadius = 4
+    $pill.Padding = '5,1,5,1'
+    $pill.Margin = '12,0,0,0'
+    $pill.VerticalAlignment = 'Center'
+    $pill.Background = Brush $C.Divider
+    $pill.Child = New-Text (([string]$u.plan).ToUpper()) $C.Muted 10 'SemiBold'
+    [System.Windows.Controls.DockPanel]::SetDock($pill, 'Right')
+    $head.Children.Add($pill) | Out-Null
   }
-  foreach ($x in $u.extras) {
-    $row = New-Text "$($x.label)   $($x.value)" $C.Muted 11.5
-    $row.Margin = '0,3,0,0'
-    $sp.Children.Add($row) | Out-Null
+  $head.Children.Add((New-Text $(if ($u.account) { [string]$u.account } else { [string]$u.name }) $C.Text 12.5 'SemiBold')) | Out-Null
+  $sp.Children.Add($head) | Out-Null
+
+  $rows = @(@($u.windows) | Where-Object { $_ }) + @(@($u.extras) | Where-Object { $_ })
+  if ($rows.Count) {
+    $line = New-Object System.Windows.Controls.Border
+    $line.Height = 1
+    $line.Background = Brush $C.Divider
+    $line.Margin = '0,8,0,4'
+    $sp.Children.Add($line) | Out-Null
+    # Label | value | reset, each column lined up across the rows.
+    $grid = New-Object System.Windows.Controls.Grid
+    foreach ($w in 'Auto', 'Auto', '*') {
+      $cd = New-Object System.Windows.Controls.ColumnDefinition
+      $cd.Width = $w
+      $grid.ColumnDefinitions.Add($cd)
+    }
+    $r = 0
+    $put = {
+      param($el, [int]$col)
+      $el.Margin = if ($col -eq 0) { '0,4,14,0' } elseif ($col -eq 1) { '0,4,16,0' } else { '0,4,0,0' }
+      [System.Windows.Controls.Grid]::SetRow($el, $r)
+      [System.Windows.Controls.Grid]::SetColumn($el, $col)
+      $grid.Children.Add($el) | Out-Null
+    }
+    foreach ($w in @($u.windows)) {
+      $grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition)) | Out-Null
+      & $put (New-Text ([string]$w.label) $C.Muted 11.5) 0
+      $lv = Level $w.usedPct
+      $pct = New-Text ("{0}% {1}" -f [math]::Round((Get-Shown $w.usedPct)), $(if ($script:display -eq 'used') { 'used' } else { 'left' })) $(if ($lv) { $lv } else { $C.Text }) 11.5 'SemiBold'
+      & $put $pct 1
+      $reset = Format-Reset $w.resetsAt -WithDate:($w.label -notmatch 'Hour')
+      if ($reset) {
+        $rt = New-Text "$([char]0x21BB) $reset" $(if (Test-Out $w) { $C.Error } else { $C.Muted }) 11.5
+        $rt.HorizontalAlignment = 'Right'
+        & $put $rt 2
+      }
+      $r++
+    }
+    foreach ($x in @($u.extras)) {
+      $grid.RowDefinitions.Add((New-Object System.Windows.Controls.RowDefinition)) | Out-Null
+      & $put (New-Text ([string]$x.label) $C.Muted 11.5) 0
+      & $put (New-Text ([string]$x.value) $C.Text 11.5 'SemiBold') 1
+      $r++
+    }
+    $sp.Children.Add($grid) | Out-Null
   }
   if ($u.error) {
-    $row = New-Text ([string]$u.error) $C.Warn 11.5
-    $row.Margin = '0,5,0,0'
-    $sp.Children.Add($row) | Out-Null
+    $e = New-Text ([string]$u.error) $C.Warn 11.5
+    $e.TextWrapping = 'Wrap'
+    $e.MaxWidth = 280
+    $e.Margin = '0,8,0,0'
+    $sp.Children.Add($e) | Out-Null
   }
   $tt.Content = $sp
   return $tt
