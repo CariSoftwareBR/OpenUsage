@@ -19,7 +19,8 @@ jobs:
       - run: test -x "$RUNNER_TEMP/OpenUsage.app/Contents/MacOS/OpenUsage"
       # Every provider should come back as JSON, even if only with a "not signed in" error.
       - run: |
-          node --experimental-strip-types --no-warnings scripts/usage-json.ts | node -e "const a=JSON.parse(require('fs').readFileSync(0,'utf8'));if(a.length!==4)process.exit(1);console.log(a.map(u=>u.id+': '+(u.error??'ok')).join('\n'))"
+          ids=$(node --experimental-strip-types --no-warnings -e "import('./src/providers/index.ts').then((m) => console.log(Object.keys(m.PROVIDERS).join(' ')))")
+          node --experimental-strip-types --no-warnings scripts/usage-json.ts $ids | IDS="$ids" node -e "const a=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(a.map(u=>u.id+': '+(u.error??'ok')).join('\n'));if(a.map(u=>u.id).join(' ')!==process.env.IDS)process.exit(1)"
 
   # scripts/add-account.ts end to end on Unix, with a fake codex that "signs in" by copying an auth.json.
   add-account:
@@ -58,3 +59,16 @@ jobs:
           test "$(codex2 where)" = "$HOME/.codex-2"
           fails add                                  # the name is taken now
           node --experimental-strip-types --no-warnings -e "import('./src/providers/index.ts').then(async (m) => { const a = (await m.fetchAllUsage('codex')).map((u) => u.account).join(','); console.log(a); if (a !== 'main@x.com,other@x.com') process.exit(1) })"
+
+          # scripts/remove-account.ts: lists the extra account, never touches the main one, removes folder and command.
+          remove() { node --experimental-strip-types --no-warnings scripts/remove-account.ts "$@"; }
+          remove --list | grep -q '"folder":".codex-2","account":"other@x.com","commands":\["codex2"\]'
+          fails remove codex codex
+          fails remove codex .codex
+          mkdir -p "$HOME/.codex-main" && cp "$HOME/.codex/auth.json" "$HOME/.codex-main/"
+          CODEX_HOME="$HOME/.codex-main" fails remove codex .codex-main  # the main folder, even named like an extra one
+          test -e "$HOME/.codex-main/auth.json" && rm -rf "$HOME/.codex-main"
+          remove codex codex2
+          test ! -e "$HOME/.codex-2" && test ! -e "$HOME/.local/bin/codex2" && test -e "$HOME/.codex/auth.json"
+          fails remove codex codex2                  # nothing left to remove
+          test "$(remove --list)" = "[]"

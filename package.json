@@ -8,7 +8,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "probe": "node --experimental-strip-types scripts/probe.ts",
-    "add-account": "node --experimental-strip-types --no-warnings scripts/add-account.ts"
+    "add-account": "node --experimental-strip-types --no-warnings scripts/add-account.ts",
+    "remove-account": "node --experimental-strip-types --no-warnings scripts/remove-account.ts"
   },
   "devDependencies": {
     "@types/node": "^24",
