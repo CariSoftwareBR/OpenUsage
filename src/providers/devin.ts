@@ -124,16 +124,28 @@ export const devin: Provider = {
     const sources = [await cliAuth(), await appAuth()].filter((a): a is Auth => !!a)
     if (!sources.length) throw new ProviderError("not signed in to Devin, run devin auth login")
     // No token refresh: a rejected CLI key falls back to the app's login.
+    // A down CLI server must not hide a working editor login either.
+    let lastError: unknown = new ProviderError("Devin: sign in again, run devin auth login")
     for (const auth of sources) {
       if (auth !== sources[0] && auth.apiKey === sources[0]!.apiKey) continue
-      const res = await userStatus(auth, signal)
+      let res: Response
+      try {
+        res = await userStatus(auth, signal)
+      } catch (err) {
+        lastError = err
+        continue
+      }
       if (res.status === 401 || res.status === 403) continue
+      if (res.status >= 500) {
+        lastError = new ProviderError(`Devin: HTTP ${res.status}`)
+        continue
+      }
       if (!res.ok) throw new ProviderError(`Devin: HTTP ${res.status}`)
       const body: any = await res.json()
       if (!body?.userStatus) throw new ProviderError("Devin: no usage data")
       return map(body.userStatus)
     }
-    throw new ProviderError("Devin: sign in again, run devin auth login")
+    throw lastError
   },
   detect: async () => !!((await cliAuth()) ?? (await appAuth())),
 }

@@ -1,7 +1,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { findKey, type KeySpec } from "./keys.ts"
-import { clampPct, ProviderError, type Provider, type ProviderUsage, type UsageExtra, type UsageWindow } from "./types.ts"
+import { clampPct, ProviderError, toMillis, type Provider, type ProviderUsage, type UsageExtra, type UsageWindow } from "./types.ts"
 
 // Undocumented, but they are what Z.ai's own subscription page calls.
 const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
@@ -21,7 +21,26 @@ const HOUR = 3_600_000
 const UNIT_MS: Record<number, number> = { 3: HOUR, 4: 24 * HOUR, 5: 30 * 24 * HOUR, 6: 7 * 24 * HOUR }
 
 const typeOf = (l: any) => l?.type ?? l?.name
-const resetOf = (l: any) => (Number.isFinite(Number(l?.nextResetTime)) && l.nextResetTime ? Number(l.nextResetTime) : undefined)
+const resetOf = (l: any) => {
+  const t = toMillis(l?.nextResetTime)
+  return t ? t : undefined
+}
+
+/** `unit` 3 = hours, 4 = days, 5 = months, 6 = weeks, times `number`. */
+function limitLabel(unit: number, count: number): string {
+  if (unit === 3) {
+    const hours = Math.round(count)
+    if (hours < 24) return `${hours}-Hour`
+    if (hours < 24 * 7) return "Daily"
+    return "Weekly"
+  }
+  if (unit === 4) return count <= 1 ? "Daily" : count >= 28 ? "Monthly" : "Weekly"
+  if (unit === 5) return "Monthly"
+  if (unit === 6) return "Weekly"
+  return "Weekly"
+}
+
+const labelRank = (label: string) => (label.endsWith("Hour") ? 0 : label === "Daily" || label.endsWith("Day") ? 1 : label === "Monthly" || label.endsWith("Month") ? 3 : 2)
 
 async function get(url: string, key: string, signal?: AbortSignal): Promise<Response> {
   return fetch(url, { signal: signal ?? AbortSignal.timeout(15_000), headers: { Authorization: `Bearer ${key}`, Accept: "application/json" } })
@@ -52,10 +71,9 @@ async function usage(key: string, signal?: AbortSignal): Promise<ProviderUsage> 
   for (const l of limits.filter((l) => ["CREDIT_LIMIT", "TOKENS_LIMIT"].includes(typeOf(l)))) {
     const ms = UNIT_MS[Number(l.unit)]
     if (!ms || !(Number(l.number) > 0) || l.percentage == null) continue
-    const label = ms * Number(l.number) < 24 * HOUR ? "5-Hour" : "Weekly"
-    windows.push({ label, usedPct: clampPct(l.percentage), resetsAt: resetOf(l) })
+    windows.push({ label: limitLabel(Number(l.unit), Number(l.number)), usedPct: clampPct(l.percentage), resetsAt: resetOf(l) })
   }
-  windows.sort((a, b) => (a.label === "5-Hour" ? -1 : b.label === "5-Hour" ? 1 : 0))
+  windows.sort((a, b) => labelRank(a.label) - labelRank(b.label))
   // TIME_LIMIT: the monthly count of web searches / web reader / Zread calls.
   const web = limits.find((l) => typeOf(l) === "TIME_LIMIT")
   if (web && Number(web.usage) > 0) {

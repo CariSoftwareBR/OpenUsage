@@ -95,11 +95,15 @@ async function isLinked(): Promise<boolean> {
   const cached = await readFile(linkedPath(), "utf8").then((raw) => JSON.parse(raw)?.linkedKey, () => undefined)
   if (cached === key.publicKey) return true
   const res = await call("POST", "/api/me", key, AbortSignal.timeout(8_000)).catch(() => undefined)
-  // An unlinked key still gets 200, with an empty user (all-zero ID, no email).
   const me: any = res?.ok ? await res.json().catch(() => undefined) : undefined
-  if (!me?.Email && !/[1-9a-f]/i.test(String(me?.ID ?? "").replace(/-/g, ""))) return false
+  if (!linkedUser(me)) return false
   await rememberLinked(key)
   return true
+}
+
+/** An unlinked key still gets 200, with an empty user (all-zero ID, no email). */
+function linkedUser(me: any): boolean {
+  return !!(me?.Email || /[1-9a-f]/i.test(String(me?.ID ?? "").replace(/-/g, "")))
 }
 
 const num = (v: unknown) => (v == null || v === "" || !Number.isFinite(Number(v)) ? undefined : Number(v))
@@ -118,8 +122,8 @@ export const ollama: Provider = {
       ),
     ])
     if (balance.status === 401 || balance.status === 403) {
-      // Signed out since: the card goes away at the next start.
-      await rememberLinked(undefined)
+      // Clock skew and a balance-only rejection look like a sign-out. Forget the link only when /api/me says so.
+      if (me && !linkedUser(me)) await rememberLinked(undefined)
       throw new ProviderError("not signed in to Ollama Cloud, run ollama signin")
     }
     if (balance.status === 429) throw new ProviderError("Ollama: rate limited, will retry")

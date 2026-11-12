@@ -97,10 +97,23 @@ async function fromCrush(ids: readonly string[]): Promise<string | undefined> {
   return undefined
 }
 
+/** True when the base URL's hostname is `host` or a subdomain of it, not a lookalike that merely contains the text. */
+function pointsAt(baseUrl: unknown, host: string): boolean {
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) return false
+  let hostname: string
+  try {
+    hostname = new URL(baseUrl).hostname.toLowerCase()
+  } catch {
+    return false
+  }
+  const expected = host.toLowerCase()
+  return hostname === expected || hostname.endsWith(`.${expected}`)
+}
+
 async function fromClaudeCode(host: string): Promise<string | undefined> {
   const dir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")
   const env = (await readJson(join(dir, "settings.json")))?.env
-  if (!String(env?.ANTHROPIC_BASE_URL ?? "").includes(host)) return undefined
+  if (!pointsAt(env?.ANTHROPIC_BASE_URL, host)) return undefined
   return literal(env.ANTHROPIC_AUTH_TOKEN) ?? literal(env.ANTHROPIC_API_KEY)
 }
 
