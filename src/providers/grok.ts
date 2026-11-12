@@ -1,4 +1,4 @@
-import { readFile, rename, writeFile } from "node:fs/promises"
+import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { clampPct, jwtPayload, ProviderError, toMillis, type Provider, type ProviderUsage, type UsageExtra, type UsageWindow } from "./types.ts"
@@ -20,12 +20,63 @@ interface Entry {
   oidc_client_id?: string
 }
 
+function parseAuth(raw: string | undefined): Record<string, Entry> | undefined {
+  if (!raw) return undefined
+  try {
+    const auth = JSON.parse(raw)
+    if (!auth || typeof auth !== "object" || Array.isArray(auth)) return undefined
+    if (!Object.values(auth).some((e: any) => e?.key)) return undefined
+    return auth
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * `auth.json.tmp` is the crash journal: the new refresh token is written there before auth.json is replaced.
+ * Windows cannot rename over a file that already exists, so a failed replace leaves the new login in the journal.
+ */
+async function installJournal(path: string): Promise<void> {
+  const tmp = `${path}.tmp`
+  try {
+    await rename(tmp, path)
+  } catch (err) {
+    if (process.platform !== "win32") throw err
+    await writeFile(path, await readFile(tmp, "utf8"), { mode: 0o600 })
+    await unlink(tmp).catch(() => {})
+  }
+}
+
+/** Reads auth.json, preferring a newer crash journal. Does not replace the file. */
+async function loadAuth(): Promise<{ auth: Record<string, Entry>; fromJournal: boolean }> {
+  const path = authPath()
+  const tmp = `${path}.tmp`
+  const [raw, journalRaw, fileStat, journalStat] = await Promise.all([
+    readFile(path, "utf8").catch(() => undefined),
+    readFile(tmp, "utf8").catch(() => undefined),
+    stat(path).catch(() => undefined),
+    stat(tmp).catch(() => undefined),
+  ])
+  const saved = parseAuth(raw)
+  const journal = parseAuth(journalRaw)
+  // A newer journal is a refresh that never landed in auth.json. It holds the rotated token.
+  const journalWins = !!journal && (!saved || !fileStat || !!(journalStat && journalStat.mtimeMs >= fileStat.mtimeMs))
+  if (journal && journalWins) return { auth: journal, fromJournal: true }
+  // A leftover older journal stays on disk. Unlinking it here races a refresh that just rewrote the same path.
+  if (saved) return { auth: saved, fromJournal: false }
+  throw new ProviderError(raw || journalRaw ? "Grok: sign in again, run grok login" : "not signed in to Grok, run grok login")
+}
+
 /** What `grok login` saved: one entry per login, keyed "<issuer>::<client id>". */
 async function readAuth(): Promise<Record<string, Entry>> {
-  const raw = await readFile(authPath(), "utf8").catch(() => undefined)
-  if (!raw) throw new ProviderError("not signed in to Grok, run grok login")
-  const auth = JSON.parse(raw)
-  if (!auth || typeof auth !== "object" || !Object.values(auth).some((e: any) => e?.key)) throw new ProviderError("Grok: sign in again, run grok login")
+  const { auth, fromJournal } = await loadAuth()
+  if (fromJournal) {
+    try {
+      await installJournal(authPath())
+    } catch {
+      // This refresh can still use the tokens; the next read tries to install them again.
+    }
+  }
   return auth
 }
 
@@ -53,23 +104,37 @@ async function refresh(entryKey: string, e: Entry): Promise<string | undefined> 
   const access = typeof t?.access_token === "string" ? t.access_token.trim() : ""
   if (!access) return undefined
   const exp = Number(t.expires_in) > 0 ? Date.now() + Number(t.expires_in) * 1000 : (expiresAt({ key: access }) ?? Date.now() + 3_600_000)
-  // Re-read so an entry the CLI changed meanwhile, or another login, isn't lost.
-  const path = authPath()
-  try {
-    const auth = JSON.parse(await readFile(path, "utf8"))
-    auth[entryKey] = {
-      ...auth[entryKey],
-      key: access,
-      ...(t.refresh_token ? { refresh_token: t.refresh_token } : {}),
-      ...(t.id_token ? { id_token: t.id_token } : {}),
-      expires_at: new Date(exp).toISOString(),
-    }
-    await writeFile(`${path}.tmp`, JSON.stringify(auth, null, 2), { mode: 0o600 })
-    await rename(`${path}.tmp`, path)
-  } catch {
-    // The new token still works for this refresh.
-  }
+  const rotated = typeof t.refresh_token === "string" ? t.refresh_token : undefined
+  // The server has already invalidated the old refresh token. Don't use the new one until auth.json has it.
+  await persistRefresh(entryKey, access, exp, rotated, typeof t.id_token === "string" ? t.id_token : undefined)
   return access
+}
+
+/** Re-reads so another login isn't lost, writes the journal, then replaces auth.json. Retries a locked file. */
+async function persistRefresh(entryKey: string, access: string, exp: number, refreshToken: string | undefined, idToken: string | undefined): Promise<void> {
+  const path = authPath()
+  let last: unknown
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const { auth } = await loadAuth()
+      auth[entryKey] = {
+        ...auth[entryKey],
+        key: access,
+        ...(refreshToken ? { refresh_token: refreshToken } : {}),
+        ...(idToken ? { id_token: idToken } : {}),
+        expires_at: new Date(exp).toISOString(),
+      }
+      await writeFile(`${path}.tmp`, JSON.stringify(auth, null, 2), { mode: 0o600 })
+      await installJournal(path)
+      const saved = parseAuth(await readFile(path, "utf8"))?.[entryKey]
+      if (saved?.key !== access || (refreshToken && saved.refresh_token !== refreshToken)) throw new Error("refreshed Grok login was not saved")
+      return
+    } catch (err) {
+      last = err
+      await new Promise((r) => setTimeout(r, 40 * (attempt + 1)))
+    }
+  }
+  throw new ProviderError("Grok: could not save the refreshed login", { cause: last })
 }
 
 const headers = (token: string) => ({

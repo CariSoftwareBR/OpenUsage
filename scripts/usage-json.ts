@@ -1,6 +1,6 @@
 // Prints every provider's usage as one JSON array. Used by the desktop widget.
 // No ids: the providers set up on this machine. --detect: just their ids, without fetching anything.
-import { fetchAllUsage, PROVIDERS, type ProviderId } from "../src/providers/index.ts"
+import { failed, fetchAllUsage, PROVIDERS, type ProviderId } from "../src/providers/index.ts"
 
 const detected = async () => {
   const all = Object.keys(PROVIDERS) as ProviderId[]
@@ -12,6 +12,8 @@ const args = process.argv.slice(2)
 if (args[0] === "--detect") {
   process.stdout.write(JSON.stringify(await detected()))
 } else {
-  const ids = (args.length ? args : await detected()) as ProviderId[]
-  process.stdout.write(JSON.stringify((await Promise.all(ids.map((id) => fetchAllUsage(id)))).flat()))
+  const requested = args.length ? args : await detected()
+  const ids = requested.filter((id): id is ProviderId => id in PROVIDERS)
+  const rows = await Promise.all(ids.map((id) => fetchAllUsage(id).catch((e) => [failed(PROVIDERS[id], e)])))
+  process.stdout.write(JSON.stringify(rows.flat()))
 }
