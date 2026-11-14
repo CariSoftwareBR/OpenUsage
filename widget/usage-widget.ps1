@@ -813,15 +813,20 @@ function New-BarRing($u) {
   return $g
 }
 
-# A limit at 80% or more breathes a soft glow in its warning color.
+# A limit at 80% or more breathes a soft glow in its warning color a few times, then holds it steady.
+# A pulse that never ends would make WPF redraw the (transparent, layered) window every frame for good.
 function Add-Glow($el, [string]$color, [double]$blur = 12) {
   $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
   $glow.Color = [System.Windows.Media.ColorConverter]::ConvertFromString($color)
   $glow.ShadowDepth = 0
   $glow.BlurRadius = $blur
+  $glow.Opacity = 0.7
   $pulse = New-Anim 0.15 0.9 1100 (New-Ease 'Sine' 'EaseInOut')
   $pulse.AutoReverse = $true
-  $pulse.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+  $pulse.RepeatBehavior = New-Object System.Windows.Media.Animation.RepeatBehavior 3.0
+  # Once done, hand back to the steady opacity above instead of holding the last frame.
+  $pulse.FillBehavior = 'Stop'
+  [System.Windows.Media.Animation.Timeline]::SetDesiredFrameRate($pulse, 30)
   $glow.BeginAnimation([System.Windows.Media.Effects.DropShadowEffect]::OpacityProperty, $pulse)
   $el.Effect = $glow
 }
@@ -1085,7 +1090,18 @@ function Set-Shimmer([bool]$on) {
   $layers = $ui.Shimmer, $ui.FrameShimmer
   $spins = $ui.BarRefresh.RenderTransform, $ui.RefreshBtn.RenderTransform
   if (-not $on) {
-    foreach ($l in $layers) { $l.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim $l.Opacity 0 300 (New-Ease))) }
+    foreach ($l in $layers) {
+      # Freeze the sweep where it is and let it fade: a "Forever" sweep left running under opacity 0
+      # keeps the render loop (and the CPU) busy until the next refresh, and then some.
+      $tr = if ($l.Background -is [System.Windows.Media.Brush]) { $l.Background.RelativeTransform }
+      if ($tr -is [System.Windows.Media.TranslateTransform]) {
+        $x = $tr.X; $y = $tr.Y
+        $tr.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null)
+        $tr.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $null)
+        $tr.X = $x; $tr.Y = $y
+      }
+      $l.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim $l.Opacity 0 300 (New-Ease)))
+    }
     foreach ($sp in $spins) { $sp.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $null); $sp.Angle = 0 }
     return
   }
@@ -1105,6 +1121,7 @@ function Set-Shimmer([bool]$on) {
     $l.Background = $brush
     $sweep = New-Anim -0.7 0.7 1300 (New-Ease 'Sine' 'EaseInOut')
     $sweep.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    [System.Windows.Media.Animation.Timeline]::SetDesiredFrameRate($sweep, 30)
     $move.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $sweep)
     $move.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $(if ($l -eq $ui.FrameShimmer) { $sweep } else { $null }))
     $l.BeginAnimation([System.Windows.UIElement]::OpacityProperty, (New-Anim 0 1 250 $null))
@@ -1112,6 +1129,7 @@ function Set-Shimmer([bool]$on) {
   foreach ($sp in $spins) {
     $turn = New-Anim 0 360 900 $null
     $turn.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    [System.Windows.Media.Animation.Timeline]::SetDesiredFrameRate($turn, 30)
     $sp.BeginAnimation([System.Windows.Media.RotateTransform]::AngleProperty, $turn)
   }
 }
