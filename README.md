@@ -16,7 +16,23 @@
 
 <br>
 
-<h2 align="center">🚀 Install it with one sentence</h2>
+<h2 align="center">⚡ Install it with one command</h2>
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/CariSoftwareBR/OpenUsage/main/install.ps1 | iex
+```
+
+**macOS / Linux** (terminal):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CariSoftwareBR/OpenUsage/main/install.sh | sh
+```
+
+That's it: the widget opens by itself. The installer brings whatever is missing (Node.js, Git, the GTK bindings on Linux, the Xcode Command Line Tools on macOS), adds OpenUsage to the desktop / app menu / Applications, and running it again updates it.
+
+<h2 align="center">🚀 Or with one sentence</h2>
 
 <p align="center">Paste this into Claude Code, Codex, Cursor or any AI agent. It does the rest.</p>
 

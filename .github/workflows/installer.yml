@@ -1,0 +1,46 @@
+name: One-command installer
+
+on:
+  push:
+    paths: ["install.sh", "install.ps1", ".github/workflows/installer.yml"]
+  pull_request:
+    paths: ["install.sh", "install.ps1", ".github/workflows/installer.yml"]
+  workflow_dispatch:
+
+jobs:
+  # Runs install.sh end to end in a fresh HOME (it clones main from GitHub), then again to update.
+  unix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh -n install.sh
+      - shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
+          unset DISPLAY WAYLAND_DISPLAY
+          sh install.sh < /dev/null
+          sh install.sh < /dev/null
+          if [ "$(uname -s)" = Darwin ]; then
+            test -x "$HOME/Applications/OpenUsage.app/Contents/MacOS/OpenUsage"
+            dir="$HOME/Library/Application Support/OpenUsage"
+          else
+            grep -q '^Exec=.*openusage.py' "$HOME/.local/share/applications/openusage.desktop"
+            dir="$HOME/.local/share/OpenUsage"
+          fi
+          test -d "$dir/.git"
+
+  # install.ps1 runs under `irm | iex`: it must parse on Windows PowerShell 5.1 and stay ASCII.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - shell: powershell
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { Write-Host $_ }; exit 1 }
+          if ([IO.File]::ReadAllBytes("$PWD\install.ps1") | Where-Object { $_ -gt 127 }) { Write-Host 'install.ps1 must be ASCII'; exit 1 }
