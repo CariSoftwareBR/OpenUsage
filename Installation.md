@@ -1,6 +1,6 @@
 # Installing OpenUsage by hand
 
-The easy way is to let your AI agent do it (see the [README](README.md)). This page has every step it follows, so you can do the same yourself, plus how the widget works, where each provider's data comes from, how to uninstall it and how the code is laid out.
+The easy way is one command, or letting your AI agent do it (see the [README](README.md)). This page has every step it follows, so you can do the same yourself, plus how the widget works, where each provider's data comes from, how to uninstall it and how the code is laid out.
 
 - [Install](#install): [Windows](#windows) · [macOS](#macos) · [Linux](#linux)
 - [Usage](#usage)
@@ -15,6 +15,17 @@ The easy way is to let your AI agent do it (see the [README](README.md)). This p
 > If someone asked you to "install", "download" or "open" this plugin/widget, follow the steps below exactly. **Do not ask the user questions:** every step has a default.
 
 > Check the operating system first: on **Windows** follow the steps right below; on **macOS** skip to [macOS](#macos); on **Linux** skip to [Linux](#linux).
+
+> **One-command install (for people).** [`install.ps1`](install.ps1) (Windows) and [`install.sh`](install.sh) (macOS and Linux) run the steps below for you, **installing what is missing without asking**: Node.js LTS and Git with `winget` on Windows; on Linux Git and the GTK bindings from the distribution (with `sudo`) and Node.js LTS from nodejs.org into `~/.local/share/OpenUsage-node` (linked in `~/.local/bin`); on macOS the Xcode Command Line Tools (with `sudo`) and Node.js LTS into `~/Library/Application Support/OpenUsage-node`. Running them again updates the install.
+>
+> ```powershell
+> irm https://raw.githubusercontent.com/CariSoftwareBR/OpenUsage/main/install.ps1 | iex
+> ```
+> ```sh
+> curl -fsSL https://raw.githubusercontent.com/CariSoftwareBR/OpenUsage/main/install.sh | sh
+> ```
+>
+> Agents follow the steps below instead.
 
 ### Windows
 
@@ -323,12 +334,12 @@ To remove an extra account: on Windows, click **+** and use the bin next to it u
 **macOS**
 
 1. In the menu bar icon, uncheck **Start at login**, then click **Quit**.
-2. Delete `~/Applications/OpenUsage.app`, `~/Library/Application Support/OpenUsage` and `~/Library/Application Support/usage-widget`.
+2. Delete `~/Applications/OpenUsage.app`, `~/Library/Application Support/OpenUsage` and `~/Library/Application Support/usage-widget`. If the one-command installer installed Node.js, also delete `~/Library/Application Support/OpenUsage-node` and the `node`, `npm` and `npx` links in `~/.local/bin`.
 
 **Linux**
 
 1. Right-click the widget header and click **Quit**.
-2. Run `python3 ~/.local/share/OpenUsage/widget-linux/openusage.py --uninstall` (removes the app menu entry and the autostart entry), then delete `~/.local/share/OpenUsage` and `~/.config/usage-widget`.
+2. Run `python3 ~/.local/share/OpenUsage/widget-linux/openusage.py --uninstall` (removes the app menu entry and the autostart entry), then delete `~/.local/share/OpenUsage` and `~/.config/usage-widget`. If the one-command installer installed Node.js, also delete `~/.local/share/OpenUsage-node` and the `node`, `npm` and `npx` links in `~/.local/bin`.
 
 ## Development
 
@@ -340,6 +351,7 @@ npm run probe
 
 Layout:
 
+- `install.ps1` / `install.sh`: the one-command installers (Windows PowerShell 5.1+, ASCII, never `exit`, since it runs under `irm | iex`; POSIX sh, LF). They automate [Install](#install): keep the three in sync.
 - `src/providers/`: one file per provider, all returning the same shape (`ProviderUsage` in `types.ts`).
 - `scripts/usage-json.ts`: prints every provider as one JSON array; this is what the widget calls.
 - `scripts/update.ts`: the version, and the self-update behind **Update now** (`check` / `apply`).
