@@ -180,7 +180,9 @@ get_code() {
     dir=$1
     if [ -d "$dir/.git" ] && have git; then
         say "Updating $dir (git pull)..."
-        git -C "$dir" pull --ff-only --quiet </dev/null \
+        # fetch + merge of the upstream ref, not `git pull`: a widget checking for
+        # updates at the same moment can rewrite FETCH_HEAD under a pull.
+        { git -C "$dir" fetch --quiet </dev/null && git -C "$dir" merge --ff-only --quiet '@{u}' </dev/null; } \
             || fail "git pull failed in $dir. Check 'git -C \"$dir\" status' and try again."
     elif have git; then
         # A copy from an earlier download without Git is replaced by a clone,
@@ -265,6 +267,8 @@ main_macos() {
 
     node_ok || install_node "$HOME/Library/Application Support/OpenUsage-node"
 
+    # An open widget keeps running the old version (and checks for updates with git).
+    pkill -x OpenUsage 2>/dev/null && sleep 1
     get_code "$dir"
 
     # Compiles ~/Applications/OpenUsage.app (closing a running copy) and opens it.

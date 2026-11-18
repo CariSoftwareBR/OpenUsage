@@ -86,7 +86,10 @@ function Install-OpenUsage {
     # 4. Get the code: git when available (updates via git pull), ZIP otherwise.
     if ((Test-Path (Join-Path $dir '.git')) -and $hasGit) {
         Write-Host "  Updating $dir (git pull)..."
-        git -C $dir pull --ff-only --quiet
+        # fetch + merge of the upstream ref, not `git pull`: a widget checking for
+        # updates at the same moment can rewrite FETCH_HEAD under a pull.
+        git -C $dir fetch --quiet
+        if ($LASTEXITCODE -eq 0) { git -C $dir merge --ff-only --quiet '@{u}' }
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  [X] git pull failed in $dir. Check 'git -C `"$dir`" status' and try again." -ForegroundColor Red
             return
