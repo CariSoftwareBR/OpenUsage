@@ -1,7 +1,7 @@
 {
   "name": "openusage",
-  "version": "1.0.4",
-  "description": "Floating Windows, macOS and Linux widget: usage limits of AI coding tools (Claude, Codex, Copilot, Cursor, Grok, Devin, OpenRouter, Z.ai, Ollama...)",
+  "version": "1.0.5",
+  "description": "Floating Windows, macOS and Linux widget: usage limits of AI coding tools (Antigravity, Claude, Codex, Copilot, Cursor, Grok, Devin, OpenRouter, Z.ai, Ollama...)",
   "type": "module",
   "private": true,
   "license": "Apache-2.0",

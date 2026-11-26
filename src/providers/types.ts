@@ -1,6 +1,7 @@
 import type { KeySpec } from "./keys.ts"
 
 export type ProviderId =
+  | "antigravity"
   | "claude"
   | "codex"
   | "copilot"

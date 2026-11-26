@@ -13,11 +13,11 @@ $RefreshMinutes = 5
 $StateDir = Join-Path $env:APPDATA 'usage-widget'
 $StatePath = Join-Path $StateDir 'widget.json'
 $ProviderNames = [ordered]@{
-  claude = 'Claude'; codex = 'Codex'; copilot = 'Copilot'; cursor = 'Cursor'; devin = 'Devin'; grok = 'Grok'; kilo = 'Kilo'
+  antigravity = 'Antigravity'; claude = 'Claude'; codex = 'Codex'; copilot = 'Copilot'; cursor = 'Cursor'; devin = 'Devin'; grok = 'Grok'; kilo = 'Kilo'
   ollama = 'Ollama'; 'opencode-go' = 'OpenCode Go'; openrouter = 'OpenRouter'; zai = 'Z.ai'
 }
 $Icons = @{
-  claude = [string][char]0x273B; codex = [string][char]0x25CE; copilot = [string][char]0x25C8; cursor = [string][char]0x2B21
+  antigravity = [string][char]0x25B3; claude = [string][char]0x273B; codex = [string][char]0x25CE; copilot = [string][char]0x25C8; cursor = [string][char]0x2B21
   devin = [string][char]0x25C7; grok = [string][char]0x2726; kilo = [string][char]0x25C6; ollama = [string][char]0x25C9
   'opencode-go' = [string][char]0x25A3; openrouter = [string][char]0x21C4; zai = [string][char]0x25B2
 }
@@ -69,7 +69,7 @@ $C = if ($light) {
   @{ Bg = '#1C1A19'; Border = '#34302D'; Divider = '#2C2926'; Text = '#EBE7E2'; Muted = '#8D8680'; Warn = '#E8953F'; Error = '#E5584F'; Ok = '#5BBF86'; Track = '#35302C'; Hover = '#2A2725'; Card = '#242120'; CardBorder = '#2E2A27' }
 }
 $Accents = @{
-  claude = '#D97757'; codex = $(if ($light) { '#0F8A6C' } else { '#3DBE9C' }); copilot = $(if ($light) { '#8250DF' } else { '#A371F7' }); cursor = $C.Text
+  antigravity = $(if ($light) { '#1A73E8' } else { '#8AB4F8' }); claude = '#D97757'; codex = $(if ($light) { '#0F8A6C' } else { '#3DBE9C' }); copilot = $(if ($light) { '#8250DF' } else { '#A371F7' }); cursor = $C.Text
   devin = $(if ($light) { '#2563EB' } else { '#60A5FA' }); grok = $C.Text; kilo = $(if ($light) { '#A68A00' } else { '#F2D33C' }); ollama = $C.Text
   'opencode-go' = $C.Text; openrouter = $(if ($light) { '#4F46E5' } else { '#818CF8' }); zai = $(if ($light) { '#0E7490' } else { '#22D3EE' })
 }

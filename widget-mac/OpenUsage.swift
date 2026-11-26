@@ -10,7 +10,7 @@ let refreshMinutes = 5.0
 let bundleId = "com.openusage.widget"
 let showNotification = Notification.Name("com.openusage.widget.show")
 let icons = [
-  "claude": "\u{273B}", "codex": "\u{25CE}", "copilot": "\u{25C8}", "cursor": "\u{2B21}", "devin": "\u{25C7}", "grok": "\u{2726}",
+  "antigravity": "\u{25B3}", "claude": "\u{273B}", "codex": "\u{25CE}", "copilot": "\u{25C8}", "cursor": "\u{2B21}", "devin": "\u{25C7}", "grok": "\u{2726}",
   "kilo": "\u{25C6}", "ollama": "\u{25C9}", "opencode-go": "\u{25A3}", "openrouter": "\u{21C4}", "zai": "\u{25B2}",
 ]
 
@@ -65,7 +65,7 @@ struct ProviderName {
 
 /** Every provider the widget offers, in the order the settings list them. */
 let providerNames = [
-  ("claude", "Claude"), ("codex", "Codex"), ("copilot", "Copilot"), ("cursor", "Cursor"), ("devin", "Devin"),
+  ("antigravity", "Antigravity"), ("claude", "Claude"), ("codex", "Codex"), ("copilot", "Copilot"), ("cursor", "Cursor"), ("devin", "Devin"),
   ("grok", "Grok"), ("kilo", "Kilo"), ("ollama", "Ollama"), ("opencode-go", "OpenCode Go"),
   ("openrouter", "OpenRouter"), ("zai", "Z.ai"),
 ].map { ProviderName(id: $0.0, name: $0.1) }
@@ -412,7 +412,7 @@ enum C {
 }
 
 let accents: [String: Color] = [
-  "claude": themed(0xD97757, 0xD97757), "codex": themed(0x0F8A6C, 0x3DBE9C), "copilot": themed(0x8250DF, 0xA371F7), "kilo": themed(0xA68A00, 0xF2D33C),
+  "antigravity": themed(0x1A73E8, 0x8AB4F8), "claude": themed(0xD97757, 0xD97757), "codex": themed(0x0F8A6C, 0x3DBE9C), "copilot": themed(0x8250DF, 0xA371F7), "kilo": themed(0xA68A00, 0xF2D33C),
   "devin": themed(0x2563EB, 0x60A5FA), "openrouter": themed(0x4F46E5, 0x818CF8), "zai": themed(0x0E7490, 0x22D3EE),
 ]
 
