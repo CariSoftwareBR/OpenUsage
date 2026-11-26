@@ -1,4 +1,5 @@
 import { basename } from "node:path"
+import { antigravity } from "./antigravity.ts"
 import { claude } from "./claude.ts"
 import { codex } from "./codex.ts"
 import { copilot } from "./copilot.ts"
@@ -15,6 +16,7 @@ import { failed, ProviderError, type Provider, type ProviderId, type ProviderUsa
 export * from "./types.ts"
 
 export const PROVIDERS: Readonly<Record<ProviderId, Provider>> = {
+  antigravity,
   claude,
   codex,
   copilot,

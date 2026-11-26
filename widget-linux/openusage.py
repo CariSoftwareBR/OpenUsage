@@ -52,6 +52,7 @@ ICON_PATH = os.path.join(ROOT, "docs", "icon.png")
 # The providers' own marks, one path each; the glyphs below stand in for any without one.
 LOGO_DIR = os.path.join(ROOT, "assets", "providers")
 ICONS = {
+    "antigravity": "△",
     "claude": "✻",
     "codex": "◎",
     "copilot": "◈",
@@ -69,7 +70,7 @@ ICONS = {
 KEYED_PROVIDERS = ["openrouter", "zai"]
 # Every provider the widget offers, in the order the settings list them.
 PROVIDER_NAMES = {
-    "claude": "Claude", "codex": "Codex", "copilot": "Copilot", "cursor": "Cursor", "devin": "Devin", "grok": "Grok",
+    "antigravity": "Antigravity", "claude": "Claude", "codex": "Codex", "copilot": "Copilot", "cursor": "Cursor", "devin": "Devin", "grok": "Grok",
     "kilo": "Kilo", "ollama": "Ollama", "opencode-go": "OpenCode Go", "openrouter": "OpenRouter", "zai": "Z.ai",
 }
 
@@ -211,6 +212,7 @@ LIGHT_DARK = {
     "card": ("#F3F0EB", "#242120"),
     "cardBorder": ("#E8E3DD", "#2E2A27"),
     "ok": ("#2E8B57", "#5BBF86"),
+    "antigravity": ("#1A73E8", "#8AB4F8"),
     "claude": ("#D97757", "#D97757"),
     "codex": ("#0F8A6C", "#3DBE9C"),
     "copilot": ("#8250DF", "#A371F7"),

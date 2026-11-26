@@ -294,6 +294,7 @@ The widget only **reads** credentials the tools themselves already saved on your
 
 | Provider | Reads from | If it shows an error |
 |---|---|---|
+| Antigravity | The app's local language server, found through `~/.gemini/antigravity/daemon/hub_*.json` while Antigravity is open; nothing is sent anywhere else | Open Antigravity and sign in: closed, it has no limits to read. Shows the quota of each model pool (each Gemini model, and Claude / GPT-OSS together) and when it resets. |
 | Claude | `~/.claude/.credentials.json` (or `CLAUDE_CONFIG_DIR`); on macOS, the Keychain item Claude Code saves | Open Claude Code and sign in. Token expired: open Claude Code once to renew it. |
 | Codex | `~/.codex/auth.json` (or `CODEX_HOME`); offline, falls back to the latest session log | Sign in to Codex with your ChatGPT account. API-key logins have no plan limits. |
 | Copilot | The sign-in of the Copilot editor plugins (`apps.json` in `%LOCALAPPDATA%\github-copilot` or `~/.config/github-copilot`), else the GitHub CLI (`gh auth token`) | Run `gh auth login`. The monthly premium requests are shown; on the Free plan, chat and completions. |
